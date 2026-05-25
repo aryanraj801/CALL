@@ -28,6 +28,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 480,
     height: 380,
+    show: false,
     title: 'NexaLink Desktop Agent',
     icon: getAppIcon(),
     backgroundColor: '#060813',

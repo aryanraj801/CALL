@@ -724,6 +724,15 @@ export default function App() {
         });
       } catch {}
     }
+
+    // Stop local media tracks to turn off the camera/mic indicator when leaving the room
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+    }
+    if (screenStream) {
+      screenStream.getTracks().forEach(t => t.stop());
+    }
+
     setInRoom(false);
     setActiveRoomId(null);
     setChatMessages([]);
@@ -1361,7 +1370,7 @@ export default function App() {
                   </div>
                   <button 
                     onClick={() => setCurrentView('lobby')}
-                    className="text-2xs font-semibold text-slate-400 hover:text-white transition"
+                    className="text-2xs font-bold text-slate-900 bg-white/90 hover:bg-white px-3 py-1.5 rounded-lg transition shadow-sm"
                   >
                     ← Return to Lobby
                   </button>
@@ -1767,69 +1776,6 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Simulation buttons to test user request */}
-                    <div className="flex gap-2 border-t border-white/5 pt-3">
-                      <button 
-                        onClick={() => {
-                          const rand = contacts[Math.floor(Math.random() * contacts.length)] || { username: 'Bob' };
-                          const room = `Private-${Math.floor(100 + Math.random() * 900)}`;
-                          setInboxNotifications(prev => [
-                            { 
-                              id: uid(), 
-                              type: 'call', 
-                              sender: rand.username, 
-                              title: `Invite from ${rand.username}`, 
-                              desc: `Invited you to private room: #${room}`, 
-                              time: nowTime(), 
-                              read: false,
-                              room: room
-                            },
-                            ...prev
-                          ]);
-                          showToast(`Simulated invite from ${rand.username}`, 'info');
-                        }}
-                        className="text-[9px] text-indigo-300 hover:text-indigo-200 font-semibold flex-1 py-1 text-center"
-                      >
-                        ⚡ Invite Alert
-                      </button>
-                      <button 
-                        onClick={() => {
-                          const rand = contacts[Math.floor(Math.random() * contacts.length)] || { username: 'Bob' };
-                          const text = "Hey there! Let's establish a secure tunnel.";
-                          setLobbyChats(prev => {
-                            const chatHistory = prev[rand.username] || [];
-                            return {
-                              ...prev,
-                              [rand.username]: [
-                                ...chatHistory,
-                                { id: uid(), sender: rand.username, text, time: nowTime(), self: false }
-                              ]
-                            };
-                          });
-                          setUnreadChatCounts(prev => ({
-                            ...prev,
-                            [rand.username]: (prev[rand.username] || 0) + 1
-                          }));
-                          setInboxNotifications(prev => [
-                            {
-                              id: uid(),
-                              type: 'chat',
-                              sender: rand.username,
-                              title: `New chat from ${rand.username}`,
-                              desc: text,
-                              time: nowTime(),
-                              read: false
-                            },
-                            ...prev
-                          ]);
-                          showToast(`Simulated message from ${rand.username}`, 'success');
-                        }}
-                        className="text-[9px] text-indigo-300 hover:text-indigo-200 font-semibold flex-1 py-1 text-center"
-                      >
-                        ⚡ Chat Message Alert
-                      </button>
-                    </div>
-
                   </div>
                 </div>
               ) : (
@@ -2066,7 +2012,7 @@ export default function App() {
                   horizontal  → row: self 40% | remotes 60% in column
               */}
               <div
-                className={`flex-1 gap-4 ${
+                className={`flex-1 gap-4 overflow-y-auto ${
                   streamLayout === 'horizontal' ? 'flex flex-row'
                   : streamLayout === 'equal'    ? 'grid'
                   : streamLayout === 'pip-remote' || streamLayout === 'pip-local' ? 'relative'
@@ -2510,7 +2456,7 @@ export default function App() {
                     className={`nx-tab ${activeTab === t.id ? 'active' : ''} relative`}>
                     <t.icon style={{ width: 13, height: 13 }} />
                     {t.label}
-                    {t.badge && t.badge > 0 && (
+                    {t.badge !== undefined && t.badge > 0 && (
                       <span className="absolute top-1.5 right-1.5 w-4 h-4 text-[9px] font-bold bg-rose-500 text-white rounded-full flex items-center justify-center">
                         {t.badge > 9 ? '9+' : t.badge}
                       </span>
