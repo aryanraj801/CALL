@@ -1,0 +1,16 @@
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pydantic>=2.6.4
+sqlalchemy>=2.0.28
+pgvector>=0.2.5
+# SEC-17 FIX: Replaced python-jose (CVE-2024-33664 algorithm confusion) with
+# PyJWT which has stricter algorithm enforcement and active maintenance.
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9
+psycopg2-binary>=2.9.9
+email-validator>=2.1.0
+python-dotenv>=1.0.0
+# SEC-10: Rate limiting middleware for brute force protection on auth endpoints
+slowapi>=0.1.9
+# SEC-16 FIX: Removed 'elasticsearch' — it was never used and adds attack surface
