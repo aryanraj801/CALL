@@ -580,7 +580,19 @@ export default function App() {
         body: JSON.stringify({ username: authUsername, email: authEmail, password: authPassword }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Registration failed');
+      if (!res.ok) {
+        let msg = 'Registration failed';
+        if (data && data.detail) {
+          if (typeof data.detail === 'string') {
+            msg = data.detail;
+          } else if (Array.isArray(data.detail)) {
+            msg = data.detail.map((d: any) => d.msg).join(', ');
+          } else if (typeof data.detail === 'object') {
+            msg = JSON.stringify(data.detail);
+          }
+        }
+        throw new Error(msg);
+      }
       setIsRegisterMode(false);
       setAuthPassword('');
 
@@ -610,7 +622,19 @@ export default function App() {
         body: JSON.stringify({ username: authUsername, password: authPassword }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Login failed');
+      if (!res.ok) {
+        let msg = 'Login failed';
+        if (data && data.detail) {
+          if (typeof data.detail === 'string') {
+            msg = data.detail;
+          } else if (Array.isArray(data.detail)) {
+            msg = data.detail.map((d: any) => d.msg).join(', ');
+          } else if (typeof data.detail === 'object') {
+            msg = JSON.stringify(data.detail);
+          }
+        }
+        throw new Error(msg);
+      }
       sessionStorage.setItem('nexalink_token', data.access_token);
       sessionStorage.setItem('nexalink_username', data.username);
       setAuthToken(data.access_token);
