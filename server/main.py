@@ -32,13 +32,16 @@ from db.supabase_api import (
     get_whiteboard_snapshots_db,
     save_user_profile_db,
     get_user_profile_db,
-    # Direct messaging & call logs
     send_direct_message_db,
     get_direct_messages_db,
     mark_messages_read_db,
+    get_direct_call_logs_db,
     log_direct_call_db,
     update_direct_call_status_db,
-    get_direct_call_logs_db,
+    add_contact_db,
+    get_contacts_db,
+    remove_contact_db,
+    get_all_direct_call_logs_db,
 )
 
 # --- Configuration ---
@@ -214,7 +217,7 @@ class WhiteboardSaveSchema(BaseModel):
 class ProfileSaveSchema(BaseModel):
     username: str = Field(..., max_length=50)
     bio: str = Field(default="", max_length=240)
-    profile_pic: str = Field(default="", max_length=150000)
+    profile_pic: str = Field(default="", max_length=1200000)
 
 
 class DirectMessageSend(BaseModel):
@@ -571,6 +574,65 @@ def get_call_history_with_user(
         raise HTTPException(status_code=401, detail="Invalid token.")
     try:
         logs = get_direct_call_logs_db(user_a=me, user_b=other_user, limit=min(limit, 100))
+        return logs
+    except Exception as e:
+        raise _safe_error(e, "Failed to retrieve call history.")
+
+
+class ContactAddSchema(BaseModel):
+    contact_username: str = Field(..., min_length=1, max_length=50)
+
+
+@app.post("/api/contacts/add")
+def add_contact(data: ContactAddSchema, current_user: dict = Depends(get_current_user)):
+    """Add a contact bidirectionally."""
+    me = current_user.get("username", "")
+    if not me:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        res = add_contact_db(username=me, contact_username=data.contact_username)
+        return {"status": "SUCCESS", "contacts": res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/contacts/list")
+def get_contacts_list(current_user: dict = Depends(get_current_user)):
+    """Retrieve saved contacts list with profiles."""
+    me = current_user.get("username", "")
+    if not me:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        contacts = get_contacts_db(username=me)
+        return contacts
+    except Exception as e:
+        raise _safe_error(e, "Failed to retrieve contacts list.")
+
+
+@app.delete("/api/contacts/remove/{contact_username}")
+def remove_contact(contact_username: str, current_user: dict = Depends(get_current_user)):
+    """Remove bidirectional contact relationship."""
+    me = current_user.get("username", "")
+    if not me:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        res = remove_contact_db(username=me, contact_username=contact_username)
+        return res
+    except Exception as e:
+        raise _safe_error(e, "Failed to remove contact.")
+
+
+@app.get("/api/calls/all")
+def get_all_call_history(
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all call logs (incoming and outgoing) for the authenticated user."""
+    me = current_user.get("username", "")
+    if not me:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        logs = get_all_direct_call_logs_db(username=me, limit=min(limit, 100))
         return logs
     except Exception as e:
         raise _safe_error(e, "Failed to retrieve call history.")

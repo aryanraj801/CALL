@@ -421,22 +421,23 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
   // to read the current alias at the moment of connection without needing it
   // as a reactive dependency.
   useEffect(() => {
-    if (!roomName) return;
+    const token = sessionStorage.getItem('nexalink_token');
+    if (!token) return;
 
     const socket = io('http://localhost:8000', {
       autoConnect: true,
       transports: ['websocket'],
       auth: {
-        token: sessionStorage.getItem('nexalink_token') || undefined,
+        token,
       },
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setIsConnected(true);
-      // BUG FIX #3: Read from ref to get the current alias value — avoids
-      // the stale closure that captured the initial alias at mount time.
-      socket.emit('join_room', { roomName, userAlias: { ...myAliasRef.current, isSharingScreen: !!screenStream } });
+      if (roomName) {
+        socket.emit('join_room', { roomName, userAlias: { ...myAliasRef.current, isSharingScreen: !!screenStream } });
+      }
     });
 
     socket.on('disconnect', () => {
@@ -455,7 +456,6 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
 
     socket.on('control_approved', ({ level }) => {
       setIsRemoteControlRequested(false);
-      // Find the pending target — we stored it in grantedTargetRef just before the request
       const targetId = grantedTargetRef.current;
       const accessType = grantedAccessTypeRef.current;
       if (targetId) {
@@ -470,18 +470,15 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       setControlLogs(prev => [...prev, `[Warning] Remote control request was rejected by host`]);
     });
 
-    // Receive injected inputs from the requester (HOST side)
     socket.on('remote_input', ({ inputType, payload }: { senderId: string; inputType: string; payload: Record<string, unknown> }) => {
       injectRemoteInput(inputType, payload);
     });
 
-    // Host physically took back control — stop capture on requester side (REQUESTER side)
     socket.on('control_overridden', ({ hostId }: { hostId: string }) => {
       stopInputCapture();
       setIsRemoteControlRequested(false);
       setIsHostOverrideActive(true);
       setControlLogs(prev => [...prev, `[Chaperone] 🖐 Host <${hostId}> physically took back control — input capture stopped`]);
-      // Auto-clear the override flash after 3 seconds
       setTimeout(() => setIsHostOverrideActive(false), 3000);
     });
 
@@ -495,7 +492,6 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       setControlLogs(prev => [...prev, `[Revoked] Host triggered emergency kill-switch`]);
     });
 
-    // Mock incoming telemetry stats updates
     const interval = setInterval(() => {
       setStats({
         videoLatency: Math.floor(35 + Math.random() * 20),
@@ -513,9 +509,19 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       Object.values(peerConnectionsRef.current).forEach(pc => pc.close());
       peerConnectionsRef.current = {};
     };
-    // BUG FIX #1: Only depend on roomName. myAlias changes are handled via
-    // the myAliasRef and the update_alias socket event in toggleAlias().
-  }, [roomName, startInputCapture, stopInputCapture, stopOverrideDetection, injectRemoteInput]);
+  }, [startInputCapture, stopInputCapture, stopOverrideDetection, injectRemoteInput]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) return;
+
+    if (roomName) {
+      socket.emit('join_room', { roomName, userAlias: { ...myAliasRef.current, isSharingScreen: !!screenStream } });
+    } else {
+      socket.emit('leave_room');
+      setParticipants([]);
+    }
+  }, [roomName, screenStream]);
 
   // BUG FIX #2: Expose socketRef.current directly instead of a duplicate useState.
   // Consumers get a stable reference through the ref rather than a stale state copy.

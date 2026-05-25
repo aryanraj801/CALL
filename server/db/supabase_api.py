@@ -344,3 +344,88 @@ def get_direct_call_logs_db(user_a: str, user_b: str, limit: int = 50):
         f"&limit={int(limit)}"
     )
     return _http_request(url, "GET")
+
+
+# 19. Add a contact relationship persistently (bidirectionally)
+def add_contact_db(username: str, contact_username: str):
+    # Check target contact profile exists
+    safe_contact = urllib.parse.quote(str(contact_username), safe='')
+    query_url = f"{SUPABASE_URL}/rest/v1/user_profiles?username=eq.{safe_contact}"
+    profile = _http_request(query_url, "GET")
+    if not profile:
+        raise Exception(f"User profile '{contact_username}' not found.")
+
+    # Check if they are adding themselves
+    if username.lower().strip() == contact_username.lower().strip():
+        raise Exception("You cannot add yourself as a contact.")
+
+    # Insert contacts bidirectional links
+    url = f"{SUPABASE_URL}/rest/v1/contacts"
+    payload = [
+        {"username": username, "contact_username": contact_username},
+        {"username": contact_username, "contact_username": username}
+    ]
+    
+    # Check if link A -> B already exists
+    safe_user = urllib.parse.quote(str(username), safe='')
+    check_url = f"{SUPABASE_URL}/rest/v1/contacts?username=eq.{safe_user}&contact_username=eq.{safe_contact}"
+    existing = _http_request(check_url, "GET")
+    
+    res = []
+    if not existing:
+        res = _http_request(url, "POST", payload)
+    return res
+
+
+# 20. Retrieve contact profiles for a user
+def get_contacts_db(username: str):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/contacts?username=eq.{safe_user}"
+    contacts_list = _http_request(url, "GET")
+    if not contacts_list:
+        return []
+    
+    contact_names = [c["contact_username"] for c in contacts_list]
+    # Fetch profiles using standard PostgREST "in" operator
+    names_str = ",".join(urllib.parse.quote(name, safe='') for name in contact_names)
+    profiles_url = f"{SUPABASE_URL}/rest/v1/user_profiles?username=in.({names_str})"
+    profiles = _http_request(profiles_url, "GET")
+    
+    profile_map = {p["username"]: p for p in profiles}
+    result = []
+    for c in contacts_list:
+        c_name = c["contact_username"]
+        prof = profile_map.get(c_name, {})
+        result.append({
+            "id": str(c["id"]),
+            "username": c_name,
+            "bio": prof.get("bio", ""),
+            "profilePic": prof.get("profile_pic", "")
+        })
+    return result
+
+
+# 21. Remove bidirectional contact relationship
+def remove_contact_db(username: str, contact_username: str):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    safe_contact = urllib.parse.quote(str(contact_username), safe='')
+    
+    url1 = f"{SUPABASE_URL}/rest/v1/contacts?username=eq.{safe_user}&contact_username=eq.{safe_contact}"
+    _http_request(url1, "DELETE")
+    
+    url2 = f"{SUPABASE_URL}/rest/v1/contacts?username=eq.{safe_contact}&contact_username=eq.{safe_user}"
+    _http_request(url2, "DELETE")
+    
+    return {"status": "SUCCESS"}
+
+
+# 22. Get all direct call history (incoming and outgoing)
+def get_all_direct_call_logs_db(username: str, limit: int = 50):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = (
+        f"{SUPABASE_URL}/rest/v1/direct_call_logs"
+        f"?or=(caller.eq.{safe_user},callee.eq.{safe_user})"
+        f"&order=started_at.desc"
+        f"&limit={int(limit)}"
+    )
+    return _http_request(url, "GET")

@@ -49,6 +49,7 @@ interface IncomingCallData {
   callerId:       string;
   room:           string;
   callType:       'voice' | 'video';
+  callId?:        number;
 }
 
 /* ─────────────────────────────────────────
@@ -156,6 +157,9 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
   const [newContact, setNewContact] = useState('');
+  const [sidebarTab, setSidebarTab] = useState<'contacts' | 'calls'>('contacts');
+  const [callHistory, setCallHistory] = useState<any[]>([]);
+  const [activeDirectCallId, setActiveDirectCallId] = useState<number | null>(null);
 
   /* UI state */
   const [currentView, setCurrentView] = useState<'landing' | 'lobby' | 'connecting' | 'room'>(() => {
@@ -264,57 +268,174 @@ export default function App() {
     sessionStorage.setItem('nexalink_notifications', JSON.stringify(inboxNotifications));
   }, [inboxNotifications]);
 
-  const sendLobbyChat = () => {
+  const sendLobbyChat = async () => {
     if (!activeChatContact || !lobbyChatInput.trim()) return;
-    const msg: ChatMessage = {
-      id: uid(),
-      sender: myAlias.name,
-      text: lobbyChatInput.trim(),
-      time: nowTime(),
-      self: true
-    };
-    setLobbyChats(prev => {
-      const chatHistory = prev[activeChatContact.username] || [];
-      return {
-        ...prev,
-        [activeChatContact.username]: [...chatHistory, msg]
-      };
-    });
-    setLobbyChatInput('');
+    const cleanText = lobbyChatInput.trim();
     
-    // Simulate contact responding after 1.5 seconds!
-    setTimeout(() => {
-      const responseText = `Encrypted handshake verified. Got your message: "${msg.text}"`;
-      const replyMsg: ChatMessage = {
-        id: uid(),
-        sender: activeChatContact.username,
-        text: responseText,
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/dm/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ recipient: activeChatContact.username, text: cleanText })
+      });
+      if (!res.ok) {
+        throw new Error("Failed to persist message");
+      }
+      
+      const sentMsg = await res.json();
+      
+      const msg: ChatMessage = {
+        id: String(sentMsg.message.id),
+        sender: userName,
+        text: cleanText,
         time: nowTime(),
-        self: false
+        self: true
       };
+      
       setLobbyChats(prev => {
         const chatHistory = prev[activeChatContact.username] || [];
         return {
           ...prev,
-          [activeChatContact.username]: [...chatHistory, replyMsg]
+          [activeChatContact.username]: [...chatHistory, msg]
         };
       });
-      // Trigger notification if user is no longer actively looking at their chat
-      setUnreadChatCounts(prev => {
-        const currentUnread = prev[activeChatContact.username] || 0;
-        return {
-          ...prev,
-          [activeChatContact.username]: currentUnread + 1
-        };
-      });
-      // OS popup — fires only if the tab is hidden/blurred
-      notify('update', {
-        sender: activeChatContact.username,
-        body: 'NexaLink received an update',
-        tag: `nexalink-lobby-${activeChatContact.username}`,
-      });
-    }, 1500);
+      
+      if (socket) {
+        socket.emit('direct_message', {
+          recipient: activeChatContact.username,
+          sender: userName,
+          text: cleanText,
+          time: msg.time
+        });
+      }
+      
+      setLobbyChatInput('');
+    } catch (err) {
+      console.error("Failed to send lobby message:", err);
+      showToast("Failed to deliver message.", "error");
+    }
   };
+
+  const loadContactsFromServer = async () => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API}/api/contacts/list`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setContacts(data);
+      }
+    } catch (err) {
+      console.error("Failed to load contacts from server:", err);
+    }
+  };
+
+  const loadCallHistoryFromServer = async () => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API}/api/calls/all`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCallHistory(data);
+      }
+    } catch (err) {
+      console.error("Failed to load call history:", err);
+    }
+  };
+
+  const updateCallStatusOnServer = async (callId: number, status: string, ended = false) => {
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      await fetch(`${API}/api/calls/update`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ call_id: callId, status, ended })
+      });
+      loadCallHistoryFromServer();
+    } catch (err) {
+      console.error("Failed to update call status:", err);
+    }
+  };
+
+  const loadChatHistory = async (otherUser: string) => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API}/api/dm/history/${otherUser}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const chatMsgs = data.map((msg: any) => ({
+          id: String(msg.id),
+          sender: msg.sender,
+          text: msg.text,
+          time: new Date(msg.sent_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+          self: msg.sender.toLowerCase() === userName.toLowerCase()
+        }));
+        setLobbyChats(prev => ({
+          ...prev,
+          [otherUser]: chatMsgs
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to load chat history:", err);
+    }
+  };
+
+  const removeContact = async (contactUsername: string) => {
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/contacts/remove/${contactUsername}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        showToast(`${contactUsername} removed persistently.`, 'success');
+        await loadContactsFromServer();
+        if (activeChatContact?.username === contactUsername) {
+          setActiveChatContact(null);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to remove contact:", err);
+      showToast("Error removing contact", "error");
+    }
+  };
+
+  useEffect(() => {
+    if (authToken) {
+      loadContactsFromServer();
+      loadCallHistoryFromServer();
+    } else {
+      setContacts([]);
+      setCallHistory([]);
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    if (authToken && sidebarTab === 'calls') {
+      loadCallHistoryFromServer();
+    }
+  }, [authToken, sidebarTab]);
+
+  useEffect(() => {
+    if (activeChatContact) {
+      loadChatHistory(activeChatContact.username);
+    }
+  }, [activeChatContact]);
 
   const loadProfileFromDB = async (targetUser: string) => {
     const token = sessionStorage.getItem('nexalink_token') || authToken;
@@ -445,36 +566,95 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  const addContact = () => {
+  const addContact = async () => {
     const username = newContact.trim();
     if (!username) return;
+    
+    if (username.toLowerCase() === userName.toLowerCase()) {
+      showToast("You cannot add yourself as a contact.", "error");
+      return;
+    }
+    
     if (contacts.some(c => c.username.toLowerCase() === username.toLowerCase())) {
       showToast('That contact is already saved.', 'info');
       return;
     }
-    setContacts(prev => [...prev, { id: uid(), username, bio: '', profilePic: '' }]);
-    setNewContact('');
-    showToast(`${username} added to contacts.`, 'success');
+    
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/contacts/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ contact_username: username })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to add contact');
+      }
+      
+      if (socket) {
+        socket.emit('add_contact', { targetUsername: username, addedBy: userName });
+      }
+      
+      await loadContactsFromServer();
+      setNewContact('');
+      showToast(`${username} added persistently.`, 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Error adding contact', 'error');
+    }
   };
 
-  const callContact = (username: string) => {
+  const callContact = async (username: string) => {
     setDirectPeer(username);
     const participants = [userName, username]
       .map(name => name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-'))
       .sort();
     const directRoom = `Direct-${participants.join('-')}`;
     copyInviteLink(directRoom);
-    // Emit a call invite to the target user via the signalling presence system
+    
+    let callId: number | undefined;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/calls/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          callee: username,
+          call_type: callType,
+          room_name: directRoom
+        })
+      });
+      if (res.ok) {
+        const logData = await res.json();
+        callId = logData.call_id;
+        if (callId) {
+          setActiveDirectCallId(callId);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to log call:", err);
+    }
+
     if (socket) {
       socket.emit('call_invite', {
         targetUsername: username,
         callerName:     profile.username || userName,
         callerUsername: userName,
         room:           directRoom,
-        callType:       'video',
+        callType:       callType,
+        callId:         callId
       });
       socket.once('call_invite_failed', ({ reason }: { reason: string }) => {
         showToast(`Cannot reach ${username}: ${reason === 'offline' ? 'user is offline' : reason}`, 'error');
+        if (callId) {
+          updateCallStatusOnServer(callId, 'missed');
+        }
       });
     }
     connectToRoom(directRoom, `Direct call room opened for ${username}.`);
@@ -489,24 +669,33 @@ export default function App() {
 
     if (action === 'ignore') {
       socket?.emit('call_response', { callerId: incomingCall.callerId, response: 'declined' });
+      if (incomingCall.callId) {
+        updateCallStatusOnServer(incomingCall.callId, 'declined');
+      }
       setIncomingCall(null);
       return;
     }
 
     if (action === 'merge') {
-      // Stay in current session and also join the incoming room
       socket?.emit('call_response', { callerId: incomingCall.callerId, response: 'merged' });
+      if (incomingCall.callId) {
+        updateCallStatusOnServer(incomingCall.callId, 'accepted');
+        setActiveDirectCallId(incomingCall.callId);
+      }
       setIncomingCall(null);
       showToast(`Merging call — joining ${incomingCall.callerName}'s room as well.`, 'info');
       connectToRoom(incomingCall.room, `Merged into ${incomingCall.callerName}'s room`);
       return;
     }
 
-    // 'leave_accept' or 'cut_accept': leave current room/call first
     if (inRoom) {
       await handleDisconnectRoom();
     }
     socket?.emit('call_response', { callerId: incomingCall.callerId, response: 'accepted' });
+    if (incomingCall.callId) {
+      updateCallStatusOnServer(incomingCall.callId, 'accepted');
+      setActiveDirectCallId(incomingCall.callId);
+    }
     setIncomingCall(null);
     connectToRoom(incomingCall.room, `Joined ${incomingCall.callerName}'s call`);
   };
@@ -759,6 +948,11 @@ export default function App() {
       } catch {}
     }
 
+    if (activeDirectCallId) {
+      updateCallStatusOnServer(activeDirectCallId, 'accepted', true);
+      setActiveDirectCallId(null);
+    }
+
     // Stop local media tracks to turn off the camera/mic indicator when leaving the room
     if (localStream) {
       localStream.getTracks().forEach(t => t.stop());
@@ -804,8 +998,8 @@ export default function App() {
     if (!socket || !userName) return;
     socket.emit('register_presence', { username: userName });
 
-    const handleIncomingCall = (data: IncomingCallData) => {
-      setIncomingCall(data);
+    const handleIncomingCall = (data: IncomingCallData & { callId?: number }) => {
+      setIncomingCall({ ...data, callId: data.callId });
       setInboxNotifications(prev => [{
         id: uid(),
         type: 'call' as const,
@@ -827,6 +1021,9 @@ export default function App() {
       callDismissTimerRef.current = setTimeout(() => {
         setIncomingCall(null);
         socket.emit('call_response', { callerId: data.callerId, response: 'declined' });
+        if (data.callId) {
+          updateCallStatusOnServer(data.callId, 'declined');
+        }
       }, 30_000);
     };
 
@@ -836,14 +1033,74 @@ export default function App() {
       showToast('Caller cancelled the call.', 'info');
     };
 
+    const handleContactAddedNotification = (data: { addedBy: string }) => {
+      showToast(`${data.addedBy} added you as a contact!`, 'success');
+      loadContactsFromServer();
+      
+      setInboxNotifications(prev => [{
+        id: uid(),
+        type: 'chat' as const,
+        sender: data.addedBy,
+        title: "Contact Relationship Added",
+        desc: `${data.addedBy} added you to their secure contacts list.`,
+        time: nowTime(),
+        read: false
+      }, ...prev.slice(0, 49)]);
+    };
+
+    const handleIncomingDirectMessage = (data: { sender: string; text: string; time: string }) => {
+      const newMsg: ChatMessage = {
+        id: uid(),
+        sender: data.sender,
+        text: data.text,
+        time: data.time,
+        self: false
+      };
+      
+      setLobbyChats(prev => {
+        const chatHistory = prev[data.sender] || [];
+        return {
+          ...prev,
+          [data.sender]: [...chatHistory, newMsg]
+        };
+      });
+      
+      if (!activeChatContact || activeChatContact.username.toLowerCase() !== data.sender.toLowerCase()) {
+        setUnreadChatCounts(prev => ({
+          ...prev,
+          [data.sender]: (prev[data.sender] || 0) + 1
+        }));
+        
+        setInboxNotifications(prev => [{
+          id: uid(),
+          type: 'chat' as const,
+          sender: data.sender,
+          title: `New DM from ${data.sender}`,
+          desc: data.text.slice(0, 60),
+          time: nowTime(),
+          read: false
+        }, ...prev.slice(0, 49)]);
+        
+        notify('update', {
+          sender: data.sender,
+          body: 'NexaLink received a direct message',
+          tag: `nexalink-lobby-${data.sender}`,
+        });
+      }
+    };
+
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_cancelled', handleCallCancelled);
+    socket.on('contact_added_notification', handleContactAddedNotification);
+    socket.on('incoming_direct_message', handleIncomingDirectMessage);
     return () => {
       socket.off('incoming_call', handleIncomingCall);
       socket.off('call_cancelled', handleCallCancelled);
+      socket.off('contact_added_notification', handleContactAddedNotification);
+      socket.off('incoming_direct_message', handleIncomingDirectMessage);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, userName]);
+  }, [socket, userName, activeChatContact]);
 
 
   /* ── Video refs ─────────────────────── */
@@ -1136,7 +1393,7 @@ export default function App() {
                 data-tip="Inbox Notifications"
               >
                 {inboxNotifications.filter(n => !n.read).length > 0 && (
-                  <div className="absolute -top-1.5 -right-1.5 bg-indigo-600 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg animate-pulse px-1" style={{ minWidth: '18px', height: '18px' }}>
+                  <div className="absolute -top-1.5 -right-1.5 bg-[var(--nx-primary)] rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg animate-pulse px-1" style={{ minWidth: '18px', height: '18px' }}>
                     {inboxNotifications.filter(n => !n.read).length}
                   </div>
                 )}
@@ -1164,7 +1421,7 @@ export default function App() {
                           className={`p-2.5 rounded-xl border transition-all duration-200 text-left cursor-pointer ${
                             notification.read 
                               ? 'border-white/5 bg-white/2 hover:bg-white/5' 
-                              : 'border-indigo-500/25 bg-indigo-600/5 hover:bg-indigo-600/10'
+                              : 'border-[var(--nx-primary)]/20 bg-[var(--nx-teal-soft)]/20 hover:bg-[var(--nx-teal-soft)]/40'
                           }`}
                           onClick={() => {
                             setInboxNotifications(prev => prev.map(n => n.id === notification.id ? { ...n, read: true } : n));
@@ -1223,8 +1480,8 @@ export default function App() {
             <div className="w-full max-w-md glass-card rounded-3xl p-8 flex flex-col gap-6 fade-up shadow-2xl relative overflow-hidden">
               
               {/* Contoured glow */}
-              <div className="absolute -top-10 -right-10 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl" />
-              <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl" />
+              <div className="absolute -top-10 -right-10 w-32 h-32 bg-[var(--nx-primary)]/10 rounded-full blur-2xl" />
+              <div className="absolute -bottom-10 -left-10 w-32 h-32 bg-[var(--nx-primary)]/10 rounded-full blur-2xl" />
 
               <div className="text-center">
                 <div className="nx-logo w-12 h-12 rounded-2xl flex items-center justify-center font-extrabold text-white text-xl mx-auto mb-4"
@@ -1725,98 +1982,163 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Right: Sidebar Contact List */}
+                  {/* Right: Sidebar Panel */}
                   <div className="glass-card rounded-3xl p-6 flex flex-col gap-5 max-h-[500px]">
                     <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                      <span className="text-xs font-bold text-white flex items-center gap-1.5"><BookUser className="w-4 h-4 text-indigo-400" /> Saved Contacts</span>
-                      <span className="nx-badge nx-badge-indigo">{contacts.length}</span>
+                      <div className="flex gap-4">
+                        <button 
+                          onClick={() => setSidebarTab('contacts')}
+                          className={`text-xs font-bold transition-all relative pb-1 ${
+                            sidebarTab === 'contacts' ? 'text-white border-b-2 border-[var(--nx-primary)]' : 'text-slate-500 hover:text-slate-300'
+                          }`}
+                        >
+                          Contacts
+                        </button>
+                        <button 
+                          onClick={() => setSidebarTab('calls')}
+                          className={`text-xs font-bold transition-all relative pb-1 ${
+                            sidebarTab === 'calls' ? 'text-white border-b-2 border-[var(--nx-primary)]' : 'text-slate-500 hover:text-slate-300'
+                          }`}
+                        >
+                          Call History
+                        </button>
+                      </div>
+                      <span className="nx-badge nx-badge-indigo">
+                        {sidebarTab === 'contacts' ? contacts.length : callHistory.length}
+                      </span>
                     </div>
 
-                    {/* Add contact */}
-                    <div className="flex gap-2">
-                      <input 
-                        className="nx-input text-xs" 
-                        value={newContact}
-                        onChange={e => setNewContact(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') addContact(); }}
-                        placeholder="Add username..." 
-                      />
-                      <button onClick={addContact} className="nx-btn-icon active px-3">
-                        <Plus className="w-4 h-4" />
-                      </button>
-                    </div>
+                    {sidebarTab === 'contacts' ? (
+                      <>
+                        {/* Add contact */}
+                        <div className="flex gap-2">
+                          <input 
+                            className="nx-input text-xs" 
+                            value={newContact}
+                            onChange={e => setNewContact(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') addContact(); }}
+                            placeholder="Add username..." 
+                          />
+                          <button onClick={addContact} className="nx-btn-icon active px-3">
+                            <Plus className="w-4 h-4" />
+                          </button>
+                        </div>
 
-                    {/* Contacts List Scroll Container */}
-                    <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
-                      {contacts.length === 0 ? (
-                        <p className="text-3xs text-slate-600 text-center py-8 italic">No saved contacts yet.</p>
-                      ) : (
-                        contacts.map(contact => {
-                          const unreadCount = unreadChatCounts[contact.username] || 0;
-                          return (
-                            <div 
-                              key={contact.id} 
-                              className="relative flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/2 hover:bg-indigo-950/20 hover:border-indigo-500/20 transition-all duration-300 group"
-                            >
-                              {contact.profilePic ? (
-                                <img src={contact.profilePic} alt={contact.username} className="w-10 h-10 rounded-2xl object-cover" />
-                              ) : (
-                                <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: 'rgba(99,102,241,0.14)' }}>
-                                  {contact.username.charAt(0).toUpperCase()}
+                        {/* Contacts List Scroll Container */}
+                        <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+                          {contacts.length === 0 ? (
+                            <p className="text-3xs text-slate-600 text-center py-8 italic">No saved contacts yet.</p>
+                          ) : (
+                            contacts.map(contact => {
+                              const unreadCount = unreadChatCounts[contact.username] || 0;
+                              return (
+                                <div 
+                                  key={contact.id} 
+                                  className="relative flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/2 hover:bg-indigo-950/20 hover:border-indigo-500/20 transition-all duration-300 group"
+                                >
+                                  {contact.profilePic ? (
+                                    <img src={contact.profilePic} alt={contact.username} className="w-10 h-10 rounded-2xl object-cover" />
+                                  ) : (
+                                    <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: 'var(--nx-teal-soft)', color: 'var(--nx-primary-dark)' }}>
+                                      {contact.username.charAt(0).toUpperCase()}
+                                    </div>
+                                  )}
+                                  
+                                  {/* Unread indicator */}
+                                  {unreadCount > 0 && (
+                                    <div className="absolute -top-1 -left-1 w-5 h-5 bg-rose-600 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg">
+                                      {unreadCount}
+                                    </div>
+                                  )}
+
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-2xs font-semibold text-white truncate">{contact.username}</p>
+                                    <p className="text-[10px] text-slate-500 truncate mt-0.5">{contact.bio || 'Secure Contact'}</p>
+                                  </div>
+
+                                  {/* Hover Options Overlay */}
+                                  <div className="absolute inset-0 bg-slate-950/90 rounded-2xl flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300 backdrop-blur-sm px-2">
+                                    <span className="text-[10px] text-slate-400 font-semibold truncate flex-1 pl-2">{contact.username}</span>
+                                    <button 
+                                      onClick={() => {
+                                        setLobbySubView('chat_lobby');
+                                        setActiveChatContact(contact);
+                                        setUnreadChatCounts(prev => ({ ...prev, [contact.username]: 0 }));
+                                      }}
+                                      className="nx-btn nx-btn-ghost text-[9px] py-1 px-2 flex items-center gap-1"
+                                    >
+                                      <MessageSquare className="w-3 h-3 text-indigo-400" /> Chat
+                                    </button>
+                                    <button 
+                                      onClick={() => callContact(contact.username)}
+                                      className="nx-btn nx-btn-primary text-[9px] py-1 px-2 flex items-center gap-1"
+                                    >
+                                      <Video className="w-3 h-3" /> Call
+                                    </button>
+                                    <button 
+                                      onClick={() => removeContact(contact.username)}
+                                      className="nx-btn nx-btn-danger text-[9px] py-1 px-2 flex items-center gap-1"
+                                      title="Remove Contact"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
                                 </div>
-                              )}
-                              
-                              {/* Unread indicator */}
-                              {unreadCount > 0 && (
-                                <div className="absolute -top-1 -left-1 w-5 h-5 bg-rose-600 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-lg">
-                                  {unreadCount}
+                              );
+                            })
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      /* Call History List Scroll Container */
+                      <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-3">
+                        {callHistory.length === 0 ? (
+                          <p className="text-3xs text-slate-600 text-center py-8 italic">No call attempts yet.</p>
+                        ) : (
+                          callHistory.map(call => {
+                            const isOutgoing = call.caller.toLowerCase() === userName.toLowerCase();
+                            const peerName = isOutgoing ? call.callee : call.caller;
+                            const callTime = new Date(call.started_at).toLocaleString('en-IN', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            });
+                            return (
+                              <div 
+                                key={call.id} 
+                                className="flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/2 hover:bg-indigo-950/10 transition-all duration-300"
+                              >
+                                <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: call.status === 'accepted' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)', color: call.status === 'accepted' ? '#34d399' : '#fca5a5' }}>
+                                  {isOutgoing ? '↗' : '↙'}
                                 </div>
-                              )}
-
-                              <div className="flex-1 min-w-0">
-                                <p className="text-2xs font-semibold text-white truncate">{contact.username}</p>
-                                <p className="text-[10px] text-slate-500 truncate mt-0.5">{contact.bio || 'Secure Contact'}</p>
+                                
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-2xs font-semibold text-white truncate">{peerName}</p>
+                                  <p className="text-[10px] text-slate-500 truncate mt-0.5">{callTime} · {call.call_type}</p>
+                                </div>
+                                
+                                <div className="flex flex-col items-end gap-1">
+                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                                    call.status === 'accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                    call.status === 'declined' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                    'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                  }`}>
+                                    {call.status}
+                                  </span>
+                                  <button 
+                                    onClick={() => callContact(peerName)}
+                                    className="text-indigo-400 hover:text-indigo-300 text-[10px] font-semibold"
+                                  >
+                                    Call
+                                  </button>
+                                </div>
                               </div>
-
-                              {/* Hover Options Overlay */}
-                              <div className="absolute inset-0 bg-slate-950/90 rounded-2xl flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-all duration-300 backdrop-blur-sm px-2">
-                                <span className="text-[10px] text-slate-400 font-semibold truncate flex-1 pl-2">{contact.username}</span>
-                                <button 
-                                  onClick={() => {
-                                    setLobbySubView('chat_lobby');
-                                    setActiveChatContact(contact);
-                                    setUnreadChatCounts(prev => ({ ...prev, [contact.username]: 0 }));
-                                  }}
-                                  className="nx-btn nx-btn-ghost text-[9px] py-1 px-2.5 flex items-center gap-1"
-                                >
-                                  <MessageSquare className="w-3 h-3 text-indigo-400" /> Chat
-                                </button>
-                                <button 
-                                  onClick={() => {
-                                    setRoomName(`Direct-${[userName, contact.username].map(n => n.toLowerCase().replace(/[^a-z0-9_-]/g, '-')).sort().join('-')}`);
-                                    setCallType('video');
-                                    setCurrentView('connecting');
-                                  }}
-                                  className="nx-btn nx-btn-primary text-[9px] py-1 px-2 flex items-center gap-1"
-                                >
-                                  <Video className="w-3 h-3" /> Video
-                                </button>
-                                <button 
-                                  onClick={() => {
-                                    setRoomName(`Direct-${[userName, contact.username].map(n => n.toLowerCase().replace(/[^a-z0-9_-]/g, '-')).sort().join('-')}`);
-                                    setCallType('voice');
-                                    setCurrentView('connecting');
-                                  }}
-                                  className="nx-btn nx-btn-ghost text-[9px] py-1 px-2 flex items-center gap-1"
-                                >
-                                  <Headphones className="w-3 h-3" /> Voice
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
 
                   </div>
                 </div>
@@ -1850,7 +2172,7 @@ export default function App() {
                                 setActiveChatContact(c);
                                 setUnreadChatCounts(prev => ({ ...prev, [c.username]: 0 }));
                               }}
-                              className={`flex items-center gap-2.5 p-2.5 rounded-xl cursor-pointer transition ${isActive ? 'bg-indigo-600/20 border border-indigo-500/30' : 'border border-transparent hover:bg-white/2'}`}
+                              className={`flex items-center gap-2.5 p-2.5 rounded-xl cursor-pointer transition ${isActive ? 'bg-[var(--nx-teal-soft)] border border-[var(--nx-primary)]/30' : 'border border-transparent hover:bg-white/2'}`}
                             >
                               <div className="relative">
                                 {c.profilePic ? (
@@ -2173,17 +2495,17 @@ export default function App() {
                         ? { flex: 1 }
                         : {}),
                     }}>
-                    <Radio className="w-8 h-8 text-indigo-400/40 animate-pulse" />
+                    <Radio className="w-8 h-8 text-[var(--nx-primary)]/40 animate-pulse" />
                     <div className="text-center">
                       <p className="text-xs text-slate-500">Waiting for peers…</p>
                       <p className="text-2xs text-slate-600 mt-1">Share room code to invite</p>
                     </div>
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer hover:bg-white/5 transition"
-                      style={{ border: '1px solid rgba(99,102,241,0.2)', background: 'rgba(99,102,241,0.05)' }}
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer hover:bg-[var(--nx-teal-soft)] transition"
+                      style={{ border: '1px solid var(--nx-line-strong)', background: 'var(--nx-panel)' }}
                       onClick={() => copyInviteLink()}>
-                      <Hash className="w-3 h-3 text-indigo-400" />
-                      <span className="font-mono text-2xs text-indigo-300">{roomName}</span>
-                      <Copy className="w-3 h-3 text-indigo-400" />
+                      <Hash className="w-3 h-3 text-[var(--nx-primary)]" />
+                      <span className="font-mono text-2xs text-[var(--nx-primary-dark)]">{roomName}</span>
+                      <Copy className="w-3 h-3 text-[var(--nx-primary)]" />
                     </div>
                   </div>
                 ) : (
@@ -2220,13 +2542,13 @@ export default function App() {
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 backdrop-blur-sm z-20">
                           <EyeOff className="w-6 h-6 text-slate-500" />
                           <p className="text-[10px] text-slate-500 font-semibold uppercase">Stream Hidden Locally</p>
-                          <button onClick={() => toggleLocalHide(peer.id)} className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold mt-1">Unhide Stream</button>
+                          <button onClick={() => toggleLocalHide(peer.id)} className="text-[9px] text-[var(--nx-primary)] hover:text-[var(--nx-primary-dark)] font-bold mt-1">Unhide Stream</button>
                         </div>
                       ) : null}
                       
                       {peer.profilePic ? (
                         <img src={peer.profilePic} alt={peer.name}
-                          className="w-20 h-20 rounded-full object-cover border-2 border-indigo-500/30 shadow-xl" />
+                          className="w-20 h-20 rounded-full object-cover border-2 border-[var(--nx-primary)]/20 shadow-xl" />
                       ) : (
                         <div className="participant-avatar">{peer.avatar}</div>
                       )}
@@ -2239,7 +2561,7 @@ export default function App() {
                       <div className="text-center">
                         <p className="text-sm font-bold text-white">{peer.name}</p>
                         <p className="text-2xs text-slate-500 mt-1">
-                          Control: <span className="text-indigo-300">{peer.controlPermissionLevel}</span>
+                          Control: <span className="text-[var(--nx-primary-dark)]">{peer.controlPermissionLevel}</span>
                         </p>
                       </div>
                       {peer.isSharingScreen && (
@@ -2516,9 +2838,9 @@ export default function App() {
 
                     {/* Pipeline status */}
                     <div className="flex items-center justify-between px-3 py-2.5 rounded-xl"
-                      style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.15)' }}>
-                      <span className="text-2xs text-indigo-300 font-semibold flex items-center gap-2">
-                        <Activity className="w-3 h-3" /> DSP Pipeline
+                      style={{ background: 'var(--nx-teal-soft)', border: '1px solid var(--nx-line-strong)' }}>
+                      <span className="text-2xs text-[var(--nx-primary-dark)] font-semibold flex items-center gap-2">
+                        <Activity className="w-3 h-3 text-[var(--nx-primary)]" /> DSP Pipeline
                       </span>
                       <span className="nx-badge nx-badge-green">Active</span>
                     </div>
@@ -2527,7 +2849,7 @@ export default function App() {
                     <div>
                       <div className="flex justify-between mb-2">
                         <span className="text-2xs text-slate-400 font-semibold">Input Level</span>
-                        <span className="text-2xs font-mono text-indigo-400">{Math.round(volPercent)}%</span>
+                        <span className="text-2xs font-mono text-[var(--nx-primary-dark)]">{Math.round(volPercent)}%</span>
                       </div>
                       <div className="voice-meter">
                         <div className="voice-meter-fill" style={{ width: `${volPercent}%` }} />
@@ -2539,7 +2861,7 @@ export default function App() {
                       <p className="nx-section-header mb-3">Voice Morphing</p>
                       <div className="flex justify-between text-2xs mb-2">
                         <span className="text-slate-400">Pitch Shift</span>
-                        <span className="font-mono text-indigo-400 font-bold">
+                        <span className="font-mono text-[var(--nx-primary-dark)] font-bold">
                           {audioConfig.pitchShift > 0 ? `+${audioConfig.pitchShift}` : audioConfig.pitchShift} st
                         </span>
                       </div>
@@ -2656,9 +2978,9 @@ export default function App() {
  
                     {/* Self */}
                     <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
-                      style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.15)' }}>
+                      style={{ background: 'var(--nx-teal-soft)', border: '1px solid var(--nx-line-strong)' }}>
                       <div className="w-8 h-8 rounded-xl flex items-center justify-center text-base"
-                        style={{ background: 'rgba(99,102,241,0.2)' }}>
+                        style={{ background: 'var(--nx-coral)' }}>
                         {myAlias.avatar}
                       </div>
                       <div className="flex-1 min-w-0">
@@ -2724,8 +3046,8 @@ export default function App() {
                                 className="w-9 h-9 rounded-xl object-cover" />
                             ) : (
                               <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                                style={{ background: 'rgba(99,102,241,0.14)' }}>
-                                <User className="w-4 h-4 text-indigo-300" />
+                                style={{ background: 'var(--nx-teal-soft)' }}>
+                                <User className="w-4 h-4 text-[var(--nx-primary)]" />
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
@@ -2751,12 +3073,12 @@ export default function App() {
                   <div className="flex flex-col gap-4">
                     <p className="nx-section-header"><User className="w-3 h-3" /> Profile</p>
                     <div className="flex flex-col items-center gap-3 text-center">
-                      <label className="w-24 h-24 rounded-full flex items-center justify-center cursor-pointer overflow-hidden"
-                        style={{ background: 'rgba(99,102,241,0.12)', border: '2px solid rgba(99,102,241,0.3)' }}>
+                      <label className="w-24 h-24 rounded-full flex items-center justify-center cursor-pointer overflow-hidden transition-all hover:scale-105"
+                        style={{ background: 'var(--nx-teal-soft)', border: '2px solid var(--nx-primary)' }}>
                         {profile.profilePic ? (
                           <img src={profile.profilePic} alt="Profile" className="w-full h-full object-cover" />
                         ) : (
-                          <ImagePlus className="w-7 h-7 text-indigo-300" />
+                          <ImagePlus className="w-7 h-7 text-[var(--nx-primary)]" />
                         )}
                         <input type="file" accept="image/*" className="hidden"
                           onChange={e => handleProfilePicUpload(e.target.files?.[0])} />

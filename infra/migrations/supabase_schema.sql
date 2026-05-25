@@ -160,3 +160,16 @@ CREATE INDEX IF NOT EXISTS idx_direct_call_logs_convo
 ALTER TABLE public.direct_call_logs ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow direct call logs access" ON public.direct_call_logs;
 CREATE POLICY "Allow direct call logs access" ON public.direct_call_logs FOR ALL USING (true);
+
+-- 9. Contacts Table (E2E persistent contact lists)
+CREATE TABLE IF NOT EXISTS public.contacts (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    contact_username VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    UNIQUE(username, contact_username)
+);
+
+ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow contacts access" ON public.contacts;
+CREATE POLICY "Allow contacts access" ON public.contacts FOR ALL USING (true);

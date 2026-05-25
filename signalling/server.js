@@ -499,6 +499,48 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('leave_room', () => {
+    if (currentRoom) {
+      socket.leave(currentRoom);
+      removeParticipant(currentRoom, socket.id);
+      currentRoom = null;
+    }
+  });
+
+  socket.on('add_contact', ({ targetUsername, addedBy }) => {
+    if (typeof targetUsername !== 'string' || typeof addedBy !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('contact_added_notification', { addedBy });
+      console.log(`[Presence] Contact alert sent: ${addedBy} -> ${targetUsername}`);
+    }
+  });
+
+  socket.on('direct_message', ({ recipient, sender, text, time }) => {
+    if (typeof recipient !== 'string' || typeof text !== 'string' || !text.trim()) return;
+    const key = recipient.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    
+    const msgPayload = {
+      sender: typeof sender === 'string' ? sender.slice(0, 80) : 'Peer',
+      text: text.slice(0, 4000),
+      time: typeof time === 'string' ? time.slice(0, 20) : '',
+    };
+    
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('incoming_direct_message', msgPayload);
+      console.log(`[Presence] Direct message routed to ${recipient}`);
+    } else {
+      sendPush(key, {
+        type: 'chat',
+        sender: msgPayload.sender,
+        body: 'NexaLink received a direct message',
+        desc: msgPayload.text.slice(0, 100),
+      });
+    }
+  });
+
   socket.on('disconnect', () => {
     console.log(`[Signalling] Client disconnected: ${socket.id}`);
     // Clean presence registry
