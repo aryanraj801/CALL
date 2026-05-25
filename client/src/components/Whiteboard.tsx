@@ -70,7 +70,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
   const fetchCloudSnapshots = async () => {
     setIsLoadingCloud(true);
     try {
-      const token = localStorage.getItem('nexalink_token');
+      const token = sessionStorage.getItem('nexalink_token');
       const res = await fetch(`${API_BASE}/api/whiteboard/list/${roomName}`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -150,7 +150,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
         .getPublicUrl(filename);
 
       // 5. Save metadata in backend API (SEC-09: token sent so server uses JWT identity)
-      const token = localStorage.getItem('nexalink_token');
+      const token = sessionStorage.getItem('nexalink_token');
       const saveRes = await fetch(`${API_BASE}/api/whiteboard/save`, {
         method: 'POST',
         headers: {
@@ -160,7 +160,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
         body: JSON.stringify({
           room_name: roomName,
           url: publicUrl,
-          username: localStorage.getItem('nexalink_username') || 'anonymous'
+          username: sessionStorage.getItem('nexalink_username') || 'anonymous'
         })
       });
 
