@@ -427,7 +427,7 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       autoConnect: true,
       transports: ['websocket'],
       auth: {
-        token: localStorage.getItem('nexalink_token') || undefined,
+        token: sessionStorage.getItem('nexalink_token') || undefined,
       },
     });
     socketRef.current = socket;
