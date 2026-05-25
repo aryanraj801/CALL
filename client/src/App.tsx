@@ -1034,7 +1034,7 @@ export default function App() {
       </div>
 
       {/* ── HEADER ─────────────────────── */}
-      <header className="relative z-10 glass app-header flex items-center justify-between px-6 py-3 border-b">
+      <header className="relative z-50 glass app-header flex items-center justify-between px-6 py-3 border-b">
 
         {/* Logo */}
         <div className="flex items-center gap-3">
