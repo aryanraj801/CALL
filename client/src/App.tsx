@@ -132,6 +132,7 @@ export default function App() {
   /* Auth state */
   const [authToken, setAuthToken] = useState<string | null>(() => sessionStorage.getItem('nexalink_token'));
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [authUsername, setAuthUsername] = useState('');
@@ -570,6 +571,7 @@ export default function App() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setAuthSuccess(null);
     setAuthLoading(true);
     try {
       const res = await fetch(`${API}/api/auth/register`, {
@@ -581,7 +583,14 @@ export default function App() {
       if (!res.ok) throw new Error(data.detail || 'Registration failed');
       setIsRegisterMode(false);
       setAuthPassword('');
-      showToast(data.message || 'Account created! Please sign in.', 'success');
+
+      if (data.confirmation_required) {
+        setAuthSuccess(data.message || 'Registration successful. Please check your email to verify your account.');
+        showToast('Verification email sent', 'success');
+      } else {
+        setAuthSuccess('Account created successfully! Please log in.');
+        showToast(data.message || 'Account created! Please sign in.', 'success');
+      }
     } catch (err: any) {
       setAuthError(err.message || 'Network error');
     } finally {
@@ -592,6 +601,7 @@ export default function App() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError(null);
+    setAuthSuccess(null);
     setAuthLoading(true);
     try {
       const res = await fetch(`${API}/api/auth/token`, {
@@ -1209,6 +1219,13 @@ export default function App() {
                   <span className="text-2xs font-semibold text-rose-300">{authError}</span>
                 </div>
               )}
+              {authSuccess && (
+                <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl nx-alert"
+                  style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 flex-shrink-0 animate-pulse" />
+                  <span className="text-2xs font-semibold text-emerald-300">{authSuccess}</span>
+                </div>
+              )}
 
               <form onSubmit={isRegisterMode ? handleRegister : handleLogin} className="flex flex-col gap-4">
                 <div>
@@ -1281,6 +1298,7 @@ export default function App() {
                   onClick={() => {
                     setIsRegisterMode(!isRegisterMode);
                     setAuthError(null);
+                    setAuthSuccess(null);
                   }}
                   className="text-2xs text-indigo-400 hover:text-indigo-300 font-semibold"
                 >
