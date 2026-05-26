@@ -67,3 +67,6 @@ htmlcov/
 *.tmp
 *.temp
 /tmp/
+
+# Push subscription persistence (runtime state, not code)
+.push_subscriptions.json

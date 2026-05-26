@@ -113,6 +113,14 @@ export function useNotifications() {
           body: JSON.stringify({ username, subscription: sub }),
         });
         subscribedRef.current = true;
+
+        // Send username to the Service Worker so it can re-register on pushsubscriptionchange
+        if (reg.active) {
+          reg.active.postMessage({ type: 'SET_USERNAME', username });
+        } else if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: 'SET_USERNAME', username });
+        }
+
         console.log('[Notifications] Web Push subscription saved for', username);
       }
     } catch (err) {
@@ -126,12 +134,20 @@ export function useNotifications() {
     try {
       const reg = swRegRef.current ?? await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
-      if (sub) await sub.unsubscribe();
-      await fetch(`${WS_URL}/api/push/subscribe`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
+      if (sub) {
+        await fetch(`${WS_URL}/api/push/subscribe`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, subscription: sub }),
+        });
+        await sub.unsubscribe();
+      } else {
+        await fetch(`${WS_URL}/api/push/subscribe`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username }),
+        });
+      }
     } catch { /* silent */ }
   }, []);
 

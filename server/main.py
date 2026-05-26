@@ -43,6 +43,9 @@ from db.supabase_api import (
     remove_contact_db,
     get_all_direct_call_logs_db,
     get_unread_messages_db,
+    create_file_transfer_db,
+    get_pending_file_transfers_db,
+    update_file_transfer_status_db,
 )
 
 # --- Configuration ---
@@ -219,6 +222,9 @@ class ProfileSaveSchema(BaseModel):
     username: str = Field(..., max_length=50)
     bio: str = Field(default="", max_length=240)
     profile_pic: str = Field(default="", max_length=1200000)
+    theme: Optional[str] = Field(default=None)
+    chat_settings: Optional[dict] = Field(default=None)
+    notif_settings: Optional[dict] = Field(default=None)
 
 
 class DirectMessageSend(BaseModel):
@@ -236,6 +242,17 @@ class DirectCallUpdate(BaseModel):
     call_id: int
     status: str = Field(..., pattern=r'^(accepted|declined|missed)$')
     ended: bool = False
+
+
+class FileTransferInitiate(BaseModel):
+    recipient: str = Field(..., min_length=1, max_length=50)
+    file_name: str = Field(..., min_length=1, max_length=500)
+    file_size: int = Field(..., ge=0)
+    file_type: str = Field(..., min_length=1, max_length=100)
+
+
+class FileTransferResponse(BaseModel):
+    status: str = Field(..., pattern=r'^(accepted|declined)$')
 
 
 # --- Public Endpoints (no auth required) ---
@@ -458,7 +475,10 @@ def save_user_profile(data: ProfileSaveSchema, current_user: dict = Depends(get_
         res = save_user_profile_db(
             username=authenticated_username,
             bio=data.bio,
-            profile_pic=data.profile_pic
+            profile_pic=data.profile_pic,
+            theme=data.theme,
+            chat_settings=data.chat_settings,
+            notif_settings=data.notif_settings
         )
         return {"status": "SUCCESS", "profile": res}
     except Exception as e:
@@ -650,3 +670,51 @@ def get_all_call_history(
         return logs
     except Exception as e:
         raise _safe_error(e, "Failed to retrieve call history.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SECURE FILE TRANSFERS
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/files/initiate")
+def initiate_file_transfer(data: FileTransferInitiate, current_user: dict = Depends(get_current_user)):
+    """Initiate a secure file transfer request and persist its metadata."""
+    sender = current_user.get("username", "")
+    if not sender:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        res = create_file_transfer_db(
+            sender=sender,
+            recipient=data.recipient,
+            file_name=data.file_name,
+            file_size=data.file_size,
+            file_type=data.file_type
+        )
+        transfer = res[0] if isinstance(res, list) and len(res) > 0 else res
+        return {"status": "SUCCESS", "transfer_id": transfer.get("id"), "transfer": transfer}
+    except Exception as e:
+        raise _safe_error(e, "Failed to initiate file transfer.")
+
+
+@app.get("/api/files/pending")
+def get_pending_transfers(current_user: dict = Depends(get_current_user)):
+    """Retrieve all pending unread file transfer requests for the authenticated user."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        transfers = get_pending_file_transfers_db(username)
+        return transfers
+    except Exception as e:
+        raise _safe_error(e, "Failed to retrieve pending file transfers.")
+
+
+@app.put("/api/files/respond/{transfer_id}")
+def respond_to_file_transfer(transfer_id: int, data: FileTransferResponse, current_user: dict = Depends(get_current_user)):
+    """Respond to a pending file transfer request (accept or decline)."""
+    try:
+        res = update_file_transfer_status_db(transfer_id=transfer_id, status=data.status)
+        transfer = res[0] if isinstance(res, list) and len(res) > 0 else res
+        return {"status": "SUCCESS", "transfer": transfer}
+    except Exception as e:
+        raise _safe_error(e, "Failed to respond to file transfer.")

@@ -6,8 +6,8 @@ import {
   Zap, Edit2, Send, X, PhoneOff, WifiOff,
   BarChart2, Activity, Hash, LogOut,
   AlertTriangle, Headphones, Copy, PhoneCall,
-  User, ImagePlus, Save, Plus, BookUser, Maximize2, Pin, PinOff, Scan, MousePointer, Keyboard,
-  LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2
+  LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Paperclip,
+  Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard
 } from 'lucide-react';
 import { useWebRTC } from './hooks/useWebRTC.ts';
 import { useAudioPipeline } from './hooks/useAudioPipeline.ts';
@@ -51,6 +51,16 @@ interface IncomingCallData {
   callType:       'voice' | 'video';
   callId?:        number;
 }
+
+interface OutgoingCall {
+  targetUsername: string;
+  room: string;
+  callType: 'voice' | 'video';
+  callId?: number;
+  status: 'ringing' | 'accepted' | 'declined' | 'failed';
+  errorReason?: string;
+}
+
 
 /* ─────────────────────────────────────────
    Helpers
@@ -235,7 +245,7 @@ export default function App() {
   // const [isPreflightConnecting, setIsPreflightConnecting] = useState(false);
   const [locallyMutedPeers, setLocallyMutedPeers] = useState<string[]>([]);
   const [locallyHiddenPeers, setLocallyHiddenPeers] = useState<string[]>([]);
-  const [lobbySubView, setLobbySubView] = useState<'connect' | 'chat_lobby'>(() => {
+  const [lobbySubView, setLobbySubView] = useState<'connect' | 'chat_lobby' | 'settings'>(() => {
     const saved = sessionStorage.getItem('nexalink_lobby_subview');
     return (saved as any) || 'connect';
   });
@@ -244,7 +254,21 @@ export default function App() {
   const [lobbyChatInput, setLobbyChatInput] = useState('');
   const [showInboxDropdown, setShowInboxDropdown] = useState(false);
   const [unreadChatCounts, setUnreadChatCounts] = useState<{ [username: string]: number }>({});
-  const [inboxNotifications, setInboxNotifications] = useState<{ id: string; type: 'chat' | 'call'; sender: string; title: string; desc: string; time: string; read: boolean; room?: string }[]>(() => {
+  const [pendingFiles, setPendingFiles] = useState<any[]>([]);
+  const filePeerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const fileDataChannelRef = useRef<RTCDataChannel | null>(null);
+  const selectedFileRef = useRef<File | null>(null);
+  const fileIceCandidatesQueueRef = useRef<RTCIceCandidateInit[]>([]);
+  const [fileTransferProgress, setFileTransferProgress] = useState<{
+    transferId: number;
+    fileName: string;
+    fileSize: number;
+    progress: number;
+    speed: string;
+    status: 'connecting' | 'transferring' | 'completed' | 'failed' | 'idle';
+    role: 'sender' | 'receiver';
+  } | null>(null);
+  const [inboxNotifications, setInboxNotifications] = useState<{ id: string; type: 'chat' | 'call'; sender: string; title: string; desc: string; time: string; read: boolean; room?: string; fileTransferId?: number }[]>(() => {
     const saved = sessionStorage.getItem('nexalink_notifications');
     return saved ? JSON.parse(saved) : [
       { id: 'n1', type: 'call', sender: 'System', title: 'Welcome to NexaLink!', desc: 'Private secure tunnel logic loaded successfully.', time: nowTime(), read: false }
@@ -253,14 +277,81 @@ export default function App() {
 
   // Incoming call modal state
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
+  const [outgoingCall, setOutgoingCall] = useState<OutgoingCall | null>(null);
   const callDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Notification permission banner — show if not yet granted/denied
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>(
     'Notification' in window ? Notification.permission : 'unsupported'
   );
+
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = sessionStorage.getItem('nexalink_theme');
+    return (saved as 'light' | 'dark') || 'dark';
+  });
+
+  const [chatSettings, setChatSettings] = useState<{ pressEnterToSend: boolean; soundEnabled: boolean; typingIndicators: boolean }>(() => {
+    const saved = sessionStorage.getItem('nexalink_chat_settings');
+    return saved ? JSON.parse(saved) : { pressEnterToSend: true, soundEnabled: true, typingIndicators: true };
+  });
+
+  const [notifSettings, setNotifSettings] = useState<{ desktopEnabled: boolean; showToastAlerts: boolean; pushWakingEnabled: boolean }>(() => {
+    const saved = sessionStorage.getItem('nexalink_notif_settings');
+    return saved ? JSON.parse(saved) : { desktopEnabled: true, showToastAlerts: true, pushWakingEnabled: true };
+  });
+
+  useEffect(() => {
+    if (theme === 'light') {
+      document.documentElement.classList.add('light-mode');
+      sessionStorage.setItem('nexalink_theme', 'light');
+    } else {
+      document.documentElement.classList.remove('light-mode');
+      sessionStorage.setItem('nexalink_theme', 'dark');
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    sessionStorage.setItem('nexalink_chat_settings', JSON.stringify(chatSettings));
+  }, [chatSettings]);
+
+  useEffect(() => {
+    sessionStorage.setItem('nexalink_notif_settings', JSON.stringify(notifSettings));
+  }, [notifSettings]);
+
+  // Global 401 Unauthorized API interceptor
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await originalFetch(input, init);
+      const url = typeof input === 'string' ? input : (input instanceof Request ? input.url : input.toString());
+      const isAuthRequest = url.includes('/api/auth/token') || url.includes('/api/auth/register');
+      
+      if (response.status === 401 && !isAuthRequest) {
+        console.warn('[Session] Caught 401 Unauthorized from API. Logging out.');
+        
+        // Clear all session states
+        sessionStorage.removeItem('nexalink_token');
+        sessionStorage.removeItem('nexalink_username');
+        sessionStorage.removeItem('nexalink_current_view');
+        sessionStorage.removeItem('nexalink_lobby_subview');
+        sessionStorage.removeItem('nexalink_contacts');
+        sessionStorage.removeItem('nexalink_notifications');
+        
+        // Reset component fields
+        setAuthToken(null);
+        setUserName('Alice');
+        setProfile(prev => ({ ...prev, username: 'Alice' }));
+        setCurrentView('landing');
+        showToast('Your session has expired. Please log in again.', 'error');
+      }
+      return response;
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
   const handleEnableNotifications = async () => {
-    await requestPermission();
+    await requestPermission(userName);
     setNotifPermission('Notification' in window ? Notification.permission : 'unsupported');
   };
 
@@ -474,6 +565,436 @@ export default function App() {
     }
   };
 
+  const loadPendingFiles = async () => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API}/api/files/pending`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPendingFiles(data);
+        // Add them to notifications if not already added
+        setInboxNotifications(prev => {
+          const next = [...prev];
+          data.forEach((f: any) => {
+            const nid = `file-${f.id}`;
+            if (!next.some(n => n.id === nid)) {
+              next.unshift({
+                id: nid,
+                type: 'chat' as const,
+                sender: f.sender,
+                title: `Incoming File: ${f.file_name}`,
+                desc: `Size: ${(f.file_size / (1024 * 1024)).toFixed(2)} MB`,
+                time: new Date(f.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+                read: false,
+                fileTransferId: f.id
+              });
+            }
+          });
+          return next.slice(0, 50);
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load pending file transfers:", err);
+    }
+  };
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !activeChatContact) return;
+
+    if (file.size > 100 * 1024 * 1024) {
+      showToast('File size must be under 100 MB.', 'error');
+      return;
+    }
+
+    selectedFileRef.current = file;
+    showToast(`Initiating transfer: ${file.name}...`, 'info');
+
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/files/initiate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          recipient: activeChatContact.username,
+          file_name: file.name,
+          file_size: file.size,
+          file_type: file.type || 'application/octet-stream'
+        })
+      });
+      
+      if (!res.ok) {
+        throw new Error("Failed to store file metadata on server.");
+      }
+      
+      const data = await res.json();
+      const transferId = data.transfer_id;
+
+      const msg: ChatMessage = {
+        id: `file-init-${transferId}`,
+        sender: profile.username || userName,
+        text: `📁 Initiated file transfer request: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`,
+        time: nowTime(),
+        self: true
+      };
+
+      setLobbyChats(prev => {
+        const chatHistory = prev[activeChatContact.username] || [];
+        return {
+          ...prev,
+          [activeChatContact.username]: [...chatHistory, msg]
+        };
+      });
+
+      if (socket) {
+        socket.emit('file_transfer_initiate', {
+          transferId,
+          senderUsername: userName,
+          recipientUsername: activeChatContact.username,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream'
+        });
+      }
+
+      setFileTransferProgress({
+        transferId,
+        fileName: file.name,
+        fileSize: file.size,
+        progress: 0,
+        speed: '0.00 KB/s',
+        status: 'connecting',
+        role: 'sender'
+      });
+      
+    } catch (err) {
+      console.error("Failed to initiate file transfer:", err);
+      showToast("Error starting transfer request.", "error");
+    }
+  };
+
+  const initiateFilePeerConnection = async (recipient: string, file: File, transferId: number) => {
+    setFileTransferProgress({
+      transferId,
+      fileName: file.name,
+      fileSize: file.size,
+      progress: 0,
+      speed: '0.00 KB/s',
+      status: 'connecting',
+      role: 'sender'
+    });
+
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    filePeerConnectionRef.current = pc;
+
+    const channel = pc.createDataChannel('fileTransfer', { ordered: true });
+    fileDataChannelRef.current = channel;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate && socket) {
+        socket.emit('file_ice_candidate', {
+          targetUsername: recipient,
+          candidate: e.candidate,
+          senderUsername: userName
+        });
+      }
+    };
+
+    channel.onopen = () => {
+      console.log('[WebRTC File] Data Channel opened! Streaming file...');
+      sendFileInChunks(file, channel, transferId);
+    };
+
+    channel.onclose = () => {
+      console.log('[WebRTC File] Data Channel closed.');
+    };
+
+    channel.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        if (e.data === '{CANCEL}') {
+          console.log('[WebRTC File] Recipient cancelled the transfer.');
+          cleanupFilePeerConnection();
+          setFileTransferProgress(prev => prev ? { ...prev, status: 'failed' } : null);
+          showToast('File transfer was cancelled by the recipient.', 'error');
+        }
+      }
+    };
+
+    channel.onerror = (err) => {
+      console.error('[WebRTC File] Data Channel error:', err);
+      setFileTransferProgress(prev => prev ? { ...prev, status: 'failed' } : null);
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    if (socket) {
+      socket.emit('file_offer', {
+        targetUsername: recipient,
+        offer,
+        senderUsername: userName
+      });
+    }
+  };
+
+  const sendFileInChunks = (file: File, channel: RTCDataChannel, transferId: number) => {
+    console.log(`[WebRTC File] Initiating chunked stream for transfer ID: ${transferId}`);
+    const CHUNK_SIZE = 16384;
+    const reader = new FileReader();
+    let offset = 0;
+    const startTime = Date.now();
+
+    const readSlice = (o: number) => {
+      const slice = file.slice(offset, o + CHUNK_SIZE);
+      reader.readAsArrayBuffer(slice);
+    };
+
+    reader.onload = (e) => {
+      const buffer = e.target?.result as ArrayBuffer;
+      if (channel.bufferedAmount > channel.bufferedAmountLowThreshold) {
+        channel.onbufferedamountlow = () => {
+          channel.onbufferedamountlow = null;
+          sendChunk(buffer);
+        };
+        return;
+      }
+      sendChunk(buffer);
+    };
+
+    const sendChunk = (buffer: ArrayBuffer) => {
+      channel.send(buffer);
+      offset += buffer.byteLength;
+
+      const elapsed = (Date.now() - startTime) / 1000;
+      const speedBps = elapsed > 0 ? (offset / elapsed) : 0;
+      const speedStr = speedBps > 1024 * 1024 
+        ? `${(speedBps / (1024 * 1024)).toFixed(2)} MB/s`
+        : `${(speedBps / 1024).toFixed(2)} KB/s`;
+
+      const progress = Math.min(100, Math.round((offset / file.size) * 100));
+
+      setFileTransferProgress(prev => prev ? { 
+        ...prev, 
+        progress,
+        speed: speedStr,
+        status: 'transferring'
+      } : null);
+
+      if (offset < file.size) {
+        readSlice(offset);
+      } else {
+        setTimeout(() => {
+          channel.send('{DONE}');
+          setFileTransferProgress(prev => prev ? { ...prev, status: 'completed', progress: 100 } : null);
+          showToast(`File transfer complete: ${file.name}`, 'success');
+          selectedFileRef.current = null;
+          const fileInput = document.getElementById('secure-file-input') as HTMLInputElement;
+          if (fileInput) fileInput.value = '';
+        }, 500);
+      }
+    };
+
+    channel.bufferedAmountLowThreshold = 1024 * 1024;
+    readSlice(0);
+  };
+
+  const acceptFileTransfer = async (transfer: { id: number; sender: string; file_name: string; file_size: number; file_type: string }) => {
+    const transferId = transfer.id;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      await fetch(`${API}/api/files/respond/${transferId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ status: 'accepted' })
+      });
+    } catch (err) {
+      console.error("Failed to respond to file transfer on server:", err);
+    }
+
+    setPendingFiles(prev => prev.filter(f => f.id !== transferId));
+
+    if (socket) {
+      socket.emit('file_transfer_response', {
+        transferId,
+        status: 'accepted',
+        recipientUsername: userName,
+        senderUsername: transfer.sender
+      });
+    }
+
+    setFileTransferProgress({
+      transferId,
+      fileName: transfer.file_name,
+      fileSize: transfer.file_size,
+      progress: 0,
+      speed: '0.00 KB/s',
+      status: 'connecting',
+      role: 'receiver'
+    });
+
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    filePeerConnectionRef.current = pc;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate && socket) {
+        socket.emit('file_ice_candidate', {
+          targetUsername: transfer.sender,
+          candidate: e.candidate,
+          senderUsername: userName
+        });
+      }
+    };
+
+    const receivedBuffers: ArrayBuffer[] = [];
+    let receivedSize = 0;
+    let startTime = Date.now();
+
+    pc.ondatachannel = (event) => {
+      const channel = event.channel;
+      fileDataChannelRef.current = channel;
+
+      channel.onmessage = (e) => {
+        if (typeof e.data === 'string') {
+          if (e.data === '{CANCEL}') {
+            console.log('[WebRTC File] Cancelled by remote peer!');
+            cleanupFilePeerConnection();
+            setFileTransferProgress(prev => prev ? { ...prev, status: 'failed' } : null);
+            showToast('File transfer was cancelled by the peer.', 'error');
+            return;
+          }
+          if (e.data === '{DONE}') {
+            console.log('[WebRTC File] Complete! Aggregating file...');
+            const fileBlob = new Blob(receivedBuffers, { type: transfer.file_type });
+            const fileUrl = URL.createObjectURL(fileBlob);
+            const a = document.createElement('a');
+            a.href = fileUrl;
+            a.download = transfer.file_name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            setFileTransferProgress(prev => prev ? { ...prev, status: 'completed', progress: 100 } : null);
+            showToast(`File download completed: ${transfer.file_name}`, 'success');
+            cleanupFilePeerConnection();
+            return;
+          }
+        }
+
+        const buffer = e.data as ArrayBuffer;
+        receivedBuffers.push(buffer);
+        receivedSize += buffer.byteLength;
+
+        const elapsed = (Date.now() - startTime) / 1000;
+        const speedBps = elapsed > 0 ? (receivedSize / elapsed) : 0;
+        const speedStr = speedBps > 1024 * 1024 
+          ? `${(speedBps / (1024 * 1024)).toFixed(2)} MB/s`
+          : `${(speedBps / 1024).toFixed(2)} KB/s`;
+
+        const progress = Math.min(100, Math.round((receivedSize / transfer.file_size) * 100));
+
+        setFileTransferProgress(prev => prev ? { 
+          ...prev, 
+          progress,
+          speed: speedStr,
+          status: 'transferring'
+        } : null);
+      };
+
+      channel.onerror = (err) => {
+        console.error('[WebRTC File] Receiver channel error:', err);
+        setFileTransferProgress(prev => prev ? { ...prev, status: 'failed' } : null);
+      };
+    };
+
+    showToast('Waiting for peer data channel connection...', 'info');
+  };
+
+  const cleanupFilePeerConnection = () => {
+    if (fileDataChannelRef.current) {
+      try {
+        fileDataChannelRef.current.close();
+      } catch (e) {}
+      fileDataChannelRef.current = null;
+    }
+    if (filePeerConnectionRef.current) {
+      try {
+        filePeerConnectionRef.current.close();
+      } catch (e) {}
+      filePeerConnectionRef.current = null;
+    }
+    fileIceCandidatesQueueRef.current = [];
+  };
+
+  const cancelFileTransfer = (remoteUser: string) => {
+    // 1. Send CANCEL control phrase if channel is open
+    if (fileDataChannelRef.current && fileDataChannelRef.current.readyState === 'open') {
+      try {
+        fileDataChannelRef.current.send('{CANCEL}');
+      } catch (e) {
+        console.error('[WebRTC File] Error sending CANCEL over data channel:', e);
+      }
+    }
+
+    // 2. Emit cancel via socket relay in case connection is still negotiating
+    if (socket && fileTransferProgress) {
+      socket.emit('file_transfer_cancel', {
+        transferId: fileTransferProgress.transferId,
+        targetUsername: remoteUser,
+        senderUsername: userName
+      });
+    }
+
+    // 3. Close and purge peer connection
+    cleanupFilePeerConnection();
+    selectedFileRef.current = null;
+
+    // 4. Update local state
+    setFileTransferProgress(prev => prev ? { ...prev, status: 'failed' } : null);
+    showToast('File transfer cancelled.', 'info');
+  };
+
+  const declineFileTransfer = async (transfer: { id: number; sender: string }) => {
+    const transferId = transfer.id;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      await fetch(`${API}/api/files/respond/${transferId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ status: 'declined' })
+      });
+    } catch (err) {
+      console.error("Failed to decline file transfer on server:", err);
+    }
+
+    setPendingFiles(prev => prev.filter(f => f.id !== transferId));
+
+    if (socket) {
+      socket.emit('file_transfer_response', {
+        transferId,
+        status: 'declined',
+        recipientUsername: userName,
+        senderUsername: transfer.sender
+      });
+    }
+    showToast('File transfer request declined.', 'info');
+  };
+
   const markMessagesAsRead = async (otherUser: string) => {
     const token = sessionStorage.getItem('nexalink_token') || authToken;
     if (!token) return;
@@ -497,6 +1018,7 @@ export default function App() {
       loadContactsFromServer();
       loadCallHistoryFromServer();
       loadPendingMessages();
+      loadPendingFiles();
     } else {
       setContacts([]);
       setCallHistory([]);
@@ -530,13 +1052,30 @@ export default function App() {
           bio: data.bio || '',
           profilePic: data.profile_pic || ''
         });
+
+        // Restore settings if targetUser is the current user
+        const currentUser = sessionStorage.getItem('nexalink_username') || userName;
+        if (targetUser.toLowerCase() === currentUser.toLowerCase()) {
+          if (data.theme) {
+            setTheme(data.theme);
+            sessionStorage.setItem('nexalink_theme', data.theme);
+          }
+          if (data.chat_settings) {
+            setChatSettings(data.chat_settings);
+            sessionStorage.setItem('nexalink_chat_settings', JSON.stringify(data.chat_settings));
+          }
+          if (data.notif_settings) {
+            setNotifSettings(data.notif_settings);
+            sessionStorage.setItem('nexalink_notif_settings', JSON.stringify(data.notif_settings));
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to load profile from database:', err);
     }
   };
 
-  const pushProfileToDB = async (updatedProfile = profile) => {
+  const pushProfileToDB = async (updatedProfile = profile, updatedTheme = theme, updatedChat = chatSettings, updatedNotif = notifSettings) => {
     const token = sessionStorage.getItem('nexalink_token') || authToken;
     if (!token) return;
     try {
@@ -549,11 +1088,14 @@ export default function App() {
         body: JSON.stringify({
           username: updatedProfile.username,
           bio: updatedProfile.bio,
-          profile_pic: updatedProfile.profilePic
+          profile_pic: updatedProfile.profilePic,
+          theme: updatedTheme,
+          chat_settings: updatedChat,
+          notif_settings: updatedNotif
         })
       });
       if (res.ok) {
-        showToast('Profile saved to database server.', 'success');
+        showToast('Profile and settings saved to database server.', 'success');
       } else {
         showToast('Failed to save profile to database.', 'error');
       }
@@ -600,8 +1142,8 @@ export default function App() {
   /* Scroll chat to bottom */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    if (activeTab !== 'chat') setUnreadChat(prev => prev + 1);
   }, [chatMessages]);
+
   useEffect(() => {
     if (activeTab === 'chat') setUnreadChat(0);
   }, [activeTab]);
@@ -720,6 +1262,14 @@ export default function App() {
       console.error("Failed to log call:", err);
     }
 
+    setOutgoingCall({
+      targetUsername: username,
+      room: directRoom,
+      callType: callType,
+      callId: callId,
+      status: 'ringing'
+    });
+
     if (socket) {
       socket.emit('call_invite', {
         targetUsername: username,
@@ -731,12 +1281,12 @@ export default function App() {
       });
       socket.once('call_invite_failed', ({ reason }: { reason: string }) => {
         showToast(`Cannot reach ${username}: ${reason === 'offline' ? 'user is offline' : reason}`, 'error');
+        setOutgoingCall(prev => prev ? { ...prev, status: 'failed', errorReason: reason === 'offline' ? 'User is offline' : reason } : null);
         if (callId) {
           updateCallStatusOnServer(callId, 'missed');
         }
       });
     }
-    connectToRoom(directRoom, `Direct call room opened for ${username}.`);
   };
 
   // ── RESPOND TO INCOMING CALL ──────────────────────────────────────────────
@@ -1184,19 +1734,175 @@ export default function App() {
       }, ...prev.slice(0, 49)]);
     };
 
+    const handleFileTransferRequest = (data: { transferId: number; senderUsername: string; recipientUsername: string; fileName: string; fileSize: number; fileType: string }) => {
+      setPendingFiles(prev => [...prev, { id: data.transferId, sender: data.senderUsername, file_name: data.fileName, file_size: data.fileSize, file_type: data.fileType }]);
+      
+      setInboxNotifications(prev => [{
+        id: `file-${data.transferId}`,
+        type: 'chat' as const,
+        sender: data.senderUsername,
+        title: `Incoming File: ${data.fileName}`,
+        desc: `Size: ${(data.fileSize / (1024*1024)).toFixed(2)} MB`,
+        time: nowTime(),
+        read: false,
+        fileTransferId: data.transferId
+      }, ...prev.slice(0, 49)]);
+
+      notify('update', {
+        sender: data.senderUsername,
+        body: `File: ${data.fileName} (${(data.fileSize / (1024*1024)).toFixed(2)} MB)`,
+        tag: `nexalink-file-${data.transferId}`
+      });
+    };
+
+    const handleFileTransferResponseEvent = (data: { transferId: number; status: 'accepted'|'declined'; recipientUsername: string }) => {
+      const notifTitle = data.status === 'accepted' ? 'File Request Accepted' : 'File Request Declined';
+      const notifDesc = `${data.recipientUsername} has ${data.status} your file transfer request.`;
+      setInboxNotifications(prev => [{
+        id: `file-resp-${data.transferId}-${Date.now()}`,
+        type: 'chat' as const,
+        sender: data.recipientUsername,
+        title: notifTitle,
+        desc: notifDesc,
+        time: nowTime(),
+        read: false
+      }, ...prev.slice(0, 49)]);
+
+      if (data.status === 'declined') {
+        showToast(`${data.recipientUsername} declined the file transfer request.`, 'error');
+        setFileTransferProgress(prev => prev && prev.transferId === data.transferId ? { ...prev, status: 'failed' } : prev);
+        selectedFileRef.current = null;
+      } else if (data.status === 'accepted') {
+        showToast(`${data.recipientUsername} accepted the request. Initiating P2P secure channel...`, 'success');
+        if (selectedFileRef.current) {
+          initiateFilePeerConnection(data.recipientUsername, selectedFileRef.current, data.transferId);
+        } else {
+          const fileInput = document.getElementById('secure-file-input') as HTMLInputElement;
+          if (fileInput && fileInput.files && fileInput.files[0]) {
+            initiateFilePeerConnection(data.recipientUsername, fileInput.files[0], data.transferId);
+          } else {
+            showToast('Selected file could not be retrieved from memory.', 'error');
+            setFileTransferProgress(prev => prev && prev.transferId === data.transferId ? { ...prev, status: 'failed' } : prev);
+          }
+        }
+      }
+    };
+
+    const handleFileTransferCancel = (data: { transferId: number; senderUsername: string }) => {
+      cleanupFilePeerConnection();
+      selectedFileRef.current = null;
+      setFileTransferProgress(prev => prev && prev.transferId === data.transferId ? { ...prev, status: 'failed' } : prev);
+      showToast(`File transfer was cancelled by ${data.senderUsername}.`, 'error');
+    };
+
+    const processQueuedFileCandidates = async (pc: RTCPeerConnection) => {
+      const candidates = [...fileIceCandidatesQueueRef.current];
+      fileIceCandidatesQueueRef.current = [];
+      console.log(`[WebRTC File] Processing ${candidates.length} queued ICE candidates`);
+      for (const candidate of candidates) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.error('[WebRTC File] Error adding queued ICE candidate:', e);
+        }
+      }
+    };
+
+    const handleFileOffer = async (data: { fromUsername: string; offer: RTCSessionDescriptionInit }) => {
+      const pc = filePeerConnectionRef.current;
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        await processQueuedFileCandidates(pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        if (socket) {
+          socket.emit('file_answer', {
+            targetUsername: data.fromUsername,
+            answer,
+            senderUsername: userName
+          });
+        }
+      } catch (err) {
+        console.error('[WebRTC File] Error in handleFileOffer:', err);
+      }
+    };
+
+    const handleFileAnswer = async (data: { fromUsername: string; answer: RTCSessionDescriptionInit }) => {
+      const pc = filePeerConnectionRef.current;
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        await processQueuedFileCandidates(pc);
+      } catch (err) {
+        console.error('[WebRTC File] Error in handleFileAnswer:', err);
+      }
+    };
+
+    const handleFileIceCandidate = async (data: { fromUsername: string; candidate: RTCIceCandidateInit }) => {
+      const pc = filePeerConnectionRef.current;
+      if (!pc) {
+        console.log('[WebRTC File] Buffering incoming ICE candidate (pc is null)');
+        fileIceCandidatesQueueRef.current.push(data.candidate);
+        return;
+      }
+      if (!pc.remoteDescription || !pc.remoteDescription.type) {
+        console.log('[WebRTC File] Buffering incoming ICE candidate (remoteDescription is not set)');
+        fileIceCandidatesQueueRef.current.push(data.candidate);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } catch (e) {
+        console.error('[WebRTC File] Error adding ICE candidate:', e);
+      }
+    };
+
+    const handleCallResponseEvent = (data: { response: 'accepted' | 'declined' | 'merged'; responderId: string }) => {
+      console.log('[Call Response Event]', data);
+      const { response } = data;
+      setOutgoingCall(prev => {
+        if (!prev) return null;
+        if (response === 'accepted' || response === 'merged') {
+          setTimeout(() => {
+            connectToRoom(prev.room, `Direct call accepted by ${prev.targetUsername}.`);
+            setOutgoingCall(null);
+          }, 100);
+          return { ...prev, status: 'accepted' };
+        } else if (response === 'declined') {
+          return { ...prev, status: 'declined' };
+        }
+        return prev;
+      });
+    };
+
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_cancelled', handleCallCancelled);
+    socket.on('call_response', handleCallResponseEvent);
     socket.on('direct_message', handleDirectMessage);
     socket.on('contact_added_notification', handleContactAddedNotification);
+    socket.on('file_transfer_request', handleFileTransferRequest);
+    socket.on('file_transfer_response', handleFileTransferResponseEvent);
+    socket.on('file_transfer_cancel', handleFileTransferCancel);
+    socket.on('file_offer', handleFileOffer);
+    socket.on('file_answer', handleFileAnswer);
+    socket.on('file_ice_candidate', handleFileIceCandidate);
+
     return () => {
       socket.off('incoming_call', handleIncomingCall);
       socket.off('call_cancelled', handleCallCancelled);
+      socket.off('call_response', handleCallResponseEvent);
       socket.off('direct_message', handleDirectMessage);
       socket.off('contact_added_notification', handleContactAddedNotification);
+      socket.off('file_transfer_request', handleFileTransferRequest);
+      socket.off('file_transfer_response', handleFileTransferResponseEvent);
+      socket.off('file_transfer_cancel', handleFileTransferCancel);
+      socket.off('file_offer', handleFileOffer);
+      socket.off('file_answer', handleFileAnswer);
+      socket.off('file_ice_candidate', handleFileIceCandidate);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, userName, activeChatContact, lobbySubView, contacts]);
-
+  }, [socket, userName, activeChatContact, lobbySubView, contacts, pendingFiles]);
 
   /* ── Video refs ─────────────────────── */
   const localVideoRef  = useRef<HTMLVideoElement | null>(null);
@@ -1236,6 +1942,12 @@ export default function App() {
     if (!socket) return;
     const handler = (data: { sender: string; text: string; time: string }) => {
       setChatMessages(prev => [...prev, { id: uid(), ...data, self: false }]);
+      setActiveTab(currentTab => {
+        if (currentTab !== 'chat') {
+          setUnreadChat(prev => prev + 1);
+        }
+        return currentTab;
+      });
       // OS push notification — fires only when the tab is hidden/blurred
       notify('update', {
         sender: data.sender,
@@ -1296,6 +2008,174 @@ export default function App() {
   const videoFitClass = fitMode === 'cover' ? 'object-cover' : 'object-contain bg-slate-950';
 
   const totalVisibleTiles = (!isSelfHidden ? 1 : 0) + orderedParticipants.length + (screenStream ? 1 : 0);
+
+  /* ── Unified settings render helper ──── */
+  const renderSettingsArea = () => {
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 fade-up">
+        {/* Card 1: Account Profile settings */}
+        <div className="glass-card rounded-3xl p-6 flex flex-col gap-4 border border-white/5">
+          <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+            <User className="w-4 h-4 text-[var(--nx-primary)]" />
+            <h3 className="text-sm font-bold text-white">Account Profile</h3>
+          </div>
+          
+          <div className="flex flex-col items-center gap-3 text-center mt-2">
+            <label className="w-24 h-24 rounded-full flex items-center justify-center cursor-pointer overflow-hidden transition-all hover:scale-105"
+              style={{ background: 'var(--nx-teal-soft)', border: '2px solid var(--nx-primary)' }}>
+              {profile.profilePic ? (
+                <img src={profile.profilePic} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <ImagePlus className="w-7 h-7 text-[var(--nx-primary)]" />
+              )}
+              <input type="file" accept="image/*" className="hidden"
+                onChange={e => handleProfilePicUpload(e.target.files?.[0])} />
+            </label>
+            
+            <div className="w-full text-left">
+              <label className="nx-input-label text-slate-400">Username Display</label>
+              <input className="nx-input mb-3 text-xs" value={profile.username}
+                onChange={e => {
+                  setProfile(prev => ({ ...prev, username: e.target.value }));
+                  setUserName(e.target.value || userName);
+                }} />
+              
+              <label className="nx-input-label text-slate-400">Bio Description</label>
+              <textarea className="nx-input text-xs" rows={3} value={profile.bio}
+                onChange={e => setProfile(prev => ({ ...prev, bio: e.target.value.slice(0, 160) }))}
+                placeholder="Write a private profile note." />
+            </div>
+            
+            <button className="nx-btn nx-btn-primary w-full text-2xs font-semibold flex items-center justify-center gap-2 mt-2" onClick={() => pushProfileToDB()}>
+              <Save className="w-3.5 h-3.5" /> Save & Sync Profile
+            </button>
+          </div>
+        </div>
+
+        {/* Card 2: Theme, Chat, & Alerts Settings */}
+        <div className="flex flex-col gap-6">
+          {/* Subcard A: Interface Theme (Light/Dark) */}
+          <div className="glass-card rounded-3xl p-6 flex flex-col gap-4 border border-white/5">
+            <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+              <Sliders className="w-4 h-4 text-[var(--nx-primary)]" />
+              <h3 className="text-sm font-bold text-white">Interface & Theme</h3>
+            </div>
+            
+            <div className="flex items-center justify-between mt-1">
+              <div>
+                <p className="text-2xs font-bold text-white">Application Theme</p>
+                <p className="text-[10px] text-slate-500 font-mono mt-0.5">Toggle between premium light and dark themes</p>
+              </div>
+              <div className="flex bg-white/5 p-1 rounded-xl border border-white/5">
+                <button 
+                  onClick={() => setTheme('light')}
+                  className={`px-3 py-1.5 rounded-lg text-3xs font-bold transition flex items-center gap-1.5 ${theme === 'light' ? 'bg-[var(--nx-primary)] text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  ☀️ Light
+                </button>
+                <button 
+                  onClick={() => setTheme('dark')}
+                  className={`px-3 py-1.5 rounded-lg text-3xs font-bold transition flex items-center gap-1.5 ${theme === 'dark' ? 'bg-[var(--nx-primary)] text-white shadow-md' : 'text-slate-400 hover:text-slate-200'}`}
+                >
+                  🌙 Dark
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Subcard B: Chat custom options */}
+          <div className="glass-card rounded-3xl p-6 flex flex-col gap-4 border border-white/5">
+            <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+              <MessageSquare className="w-4 h-4 text-[var(--nx-primary)]" />
+              <h3 className="text-sm font-bold text-white">Chat Customizations</h3>
+            </div>
+
+            <div className="flex flex-col gap-3.5 mt-1">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Press Enter to Send</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Submit messages instantly when pressing Enter</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={chatSettings.pressEnterToSend} 
+                    onChange={e => setChatSettings(prev => ({ ...prev, pressEnterToSend: e.target.checked }))} 
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Message Sound Alerts</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Play sound effects upon receiving direct messages</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={chatSettings.soundEnabled} 
+                    onChange={e => setChatSettings(prev => ({ ...prev, soundEnabled: e.target.checked }))} 
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Subcard C: Desktop Notifications preferences */}
+          <div className="glass-card rounded-3xl p-6 flex flex-col gap-4 border border-white/5">
+            <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+              <Radio className="w-4 h-4 text-[var(--nx-primary)]" />
+              <h3 className="text-sm font-bold text-white">Notifications Preferences</h3>
+            </div>
+
+            <div className="flex flex-col gap-3.5 mt-1">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Desktop Notifications</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Show native OS alert indicators for incoming calls</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={notifSettings.desktopEnabled} 
+                    onChange={e => {
+                      const checked = e.target.checked;
+                      setNotifSettings(prev => ({ ...prev, desktopEnabled: checked }));
+                      if (checked) {
+                        requestPermission(userName);
+                      }
+                    }}
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Persistent Notification Banner</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Display in-app floating system status alerts</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={notifSettings.showToastAlerts} 
+                    onChange={e => setNotifSettings(prev => ({ ...prev, showToastAlerts: e.target.checked }))} 
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   /* ═══════════════════════════════════════
      RENDER
@@ -1411,7 +2291,123 @@ export default function App() {
         </div>
       )}
 
-      {/* Animated Background */}
+      {outgoingCall && (
+        <div
+          className="fixed inset-0 z-[9998] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(15px)' }}
+        >
+          <div
+            className="relative flex flex-col items-center gap-6 px-8 py-8 rounded-3xl shadow-2xl animate-fade-in"
+            style={{
+              background: 'linear-gradient(145deg, rgba(44,37,35,0.98) 0%, rgba(28,22,20,0.99) 100%)',
+              border: '1.5px solid rgba(255,212,172,0.22)',
+              minWidth: 340, maxWidth: 440,
+              boxShadow: '0 30px 80px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,212,172,0.08)',
+            }}
+          >
+            {/* Ringing ring animation */}
+            <div className="relative flex items-center justify-center">
+              {outgoingCall.status === 'ringing' && (
+                <>
+                  <span className="absolute w-24 h-24 rounded-full animate-ping"
+                    style={{ background: 'rgba(227,154,122,0.18)', animationDuration: '1.2s' }} />
+                  <span className="absolute w-20 h-20 rounded-full animate-ping"
+                    style={{ background: 'rgba(227,154,122,0.12)', animationDuration: '1.2s', animationDelay: '0.3s' }} />
+                </>
+              )}
+              <div className="relative w-16 h-16 rounded-full flex items-center justify-center text-3xl shadow-xl"
+                style={{ 
+                  background: outgoingCall.status === 'declined' || outgoingCall.status === 'failed'
+                    ? 'linear-gradient(135deg, #ef4444, #b91c1c)' 
+                    : 'linear-gradient(135deg, #E39A7A, #FFD4AC)', 
+                  border: '2px solid rgba(255,212,172,0.5)' 
+                }}>
+                {outgoingCall.status === 'declined' || outgoingCall.status === 'failed' ? '❌' : (outgoingCall.callType === 'voice' ? '📞' : '📹')}
+              </div>
+            </div>
+
+            {/* Callee info */}
+            <div className="text-center">
+              <p className="text-[10px] font-semibold tracking-widest uppercase"
+                style={{ color: 'rgba(255,212,172,0.55)' }}>
+                {outgoingCall.status === 'ringing' && 'Calling Peer...'}
+                {outgoingCall.status === 'accepted' && 'Connecting...'}
+                {outgoingCall.status === 'declined' && 'Call Rejected'}
+                {outgoingCall.status === 'failed' && 'Connection Failed'}
+              </p>
+              <p className="text-xl font-bold mt-1" style={{ color: '#FFD4AC' }}>
+                {outgoingCall.targetUsername}
+              </p>
+              <p className="text-2xs font-mono mt-1 text-slate-400">
+                {outgoingCall.status === 'ringing' && 'Waiting for handshake...'}
+                {outgoingCall.status === 'accepted' && 'Establishing WebRTC channels...'}
+                {outgoingCall.status === 'declined' && 'The recipient declined your call.'}
+                {outgoingCall.status === 'failed' && (outgoingCall.errorReason || 'User is offline.')}
+              </p>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex flex-col gap-2.5 w-full mt-2">
+              {outgoingCall.status === 'ringing' && (
+                <button
+                  onClick={() => {
+                    // Cancel the call
+                    socket?.emit('call_cancel', { targetUsername: outgoingCall.targetUsername });
+                    if (outgoingCall.callId) {
+                      updateCallStatusOnServer(outgoingCall.callId, 'missed');
+                    }
+                    setOutgoingCall(null);
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl font-bold text-xs transition hover:bg-white/5"
+                  style={{
+                    background: 'rgba(239,68,68,0.12)',
+                    color: '#fca5a5',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                  }}
+                >
+                  <PhoneOff className="w-4 h-4" />
+                  Cancel Call
+                </button>
+              )}
+
+              {(outgoingCall.status === 'declined' || outgoingCall.status === 'failed') && (
+                <>
+                  <button
+                    onClick={() => {
+                      const target = outgoingCall.targetUsername;
+                      const type = outgoingCall.callType;
+                      setOutgoingCall(null);
+                      setTimeout(() => {
+                        setCallType(type);
+                        callContact(target);
+                      }, 100);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl font-bold text-xs transition"
+                    style={{
+                      background: 'linear-gradient(135deg, #FFD4AC, #E39A7A)',
+                      color: '#2c2523',
+                      boxShadow: '0 4px 15px rgba(227,154,122,0.25)',
+                      border: 'none'
+                    }}
+                  >
+                    <PhoneCall className="w-4 h-4" />
+                    Try Again
+                  </button>
+
+                  <button
+                    onClick={() => setOutgoingCall(null)}
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl font-bold text-xs transition hover:bg-white/5 border border-white/10 text-slate-300"
+                    style={{ background: 'transparent' }}
+                  >
+                    Close
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="nx-bg">
         <div className="nx-bg-grid" />
         <div className="nx-bg-orb nx-bg-orb-1" />
@@ -1500,10 +2496,10 @@ export default function App() {
                   <div className="flex items-center justify-between pb-2 border-b border-white/5 mb-3">
                     <span className="text-xs font-bold text-white">Lobby Inbox Notifications</span>
                     <button 
-                      onClick={() => setInboxNotifications(prev => prev.map(n => ({ ...n, read: true })))}
-                      className="text-3xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                      onClick={() => setInboxNotifications([])}
+                      className="text-3xs text-rose-400 hover:text-rose-300 font-semibold"
                     >
-                      Mark all read
+                      Clear all alerts
                     </button>
                   </div>
                   <div className="max-h-60 overflow-y-auto pr-1 flex flex-col gap-2.5">
@@ -1513,13 +2509,9 @@ export default function App() {
                       inboxNotifications.map(notification => (
                         <div 
                           key={notification.id} 
-                          className={`p-2.5 rounded-xl border transition-all duration-200 text-left cursor-pointer ${
-                            notification.read 
-                              ? 'border-white/5 bg-white/2 hover:bg-white/5' 
-                              : 'border-[var(--nx-primary)]/20 bg-[var(--nx-teal-soft)]/20 hover:bg-[var(--nx-teal-soft)]/40'
-                          }`}
+                          className="p-2.5 rounded-xl border border-[var(--nx-primary)]/20 bg-[var(--nx-teal-soft)]/20 hover:bg-[var(--nx-teal-soft)]/40 transition-all duration-200 text-left cursor-pointer"
                           onClick={() => {
-                            setInboxNotifications(prev => prev.map(n => n.id === notification.id ? { ...n, read: true } : n));
+                            setInboxNotifications(prev => prev.filter(n => n.id !== notification.id));
                             setShowInboxDropdown(false);
                             if (notification.type === 'chat') {
                               setLobbySubView('chat_lobby');
@@ -1553,6 +2545,21 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
+          {authToken && (
+            <button 
+              onClick={() => {
+                if (currentView === 'lobby') {
+                  setLobbySubView(prev => prev === 'settings' ? 'connect' : 'settings');
+                } else if (currentView === 'room') {
+                  setActiveTab('profile');
+                }
+              }}
+              className={`nx-tooltip nx-btn-icon ${(currentView === 'lobby' && lobbySubView === 'settings') || (currentView === 'room' && activeTab === 'profile') ? 'active' : ''}`}
+              data-tip="Settings"
+            >
+              <Sliders className="w-4 h-4 text-white" />
+            </button>
           )}
           {authToken && (
             <button onClick={handleSignOut}
@@ -1982,7 +2989,28 @@ export default function App() {
                 </div>
               )}
 
-              {lobbySubView === 'connect' ? (
+              {lobbySubView === 'settings' ? (
+                /* SETTINGS SUBVIEW */
+                <div className="w-full max-w-4xl mx-auto flex flex-col gap-6 fade-up">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="nx-badge nx-badge-amber mb-1.5 uppercase tracking-widest text-[9px]">App Preferences</span>
+                      <h2 className="text-xl font-bold text-white font-display flex items-center gap-2">
+                        <Sliders className="w-5 h-5 text-[var(--nx-primary)]" />
+                        Account & App Settings
+                      </h2>
+                      <p className="text-3xs text-slate-500 mt-0.5 font-mono">Manage E2E client profile and local application state</p>
+                    </div>
+                    <button 
+                      onClick={() => setLobbySubView('connect')}
+                      className="nx-btn nx-btn-ghost text-2xs font-semibold py-2 px-4"
+                    >
+                      ← Back to Connect
+                    </button>
+                  </div>
+                  {renderSettingsArea()}
+                </div>
+              ) : lobbySubView === 'connect' ? (
                 /* CONNECT SUBVIEW */
                 <div className="w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-[1.3fr_0.7fr] gap-6 fade-up">
                   
@@ -2308,48 +3336,95 @@ export default function App() {
                   <div className="flex flex-col h-full overflow-hidden">
                     {activeChatContact ? (
                       <>
-                        {/* Selected Contact Header */}
-                        <div className="flex items-center justify-between pb-3 border-b border-white/5 mb-3">
+                        {/* Gorgeous WhatsApp-style Chat Header */}
+                        <div className="flex items-center justify-between pb-3.5 border-b border-white/5 mb-4 mt-1">
                           <div className="flex items-center gap-3">
                             {activeChatContact.profilePic ? (
-                              <img src={activeChatContact.profilePic} alt={activeChatContact.username} className="w-9 h-9 rounded-xl object-cover" />
+                              <img src={activeChatContact.profilePic} alt={activeChatContact.username} className="w-10 h-10 rounded-2xl object-cover border border-white/10 shadow-md" />
                             ) : (
-                              <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base font-bold bg-white/5">
+                              <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-bold bg-white/5 border border-white/10 text-white shadow-md">
                                 {activeChatContact.username.charAt(0).toUpperCase()}
                               </div>
                             )}
-                            <div>
-                              <p className="text-2xs font-bold text-white">{activeChatContact.username}</p>
-                              <p className="text-[10px] text-slate-500 truncate max-w-xs">{activeChatContact.bio || 'Direct call encrypted session'}</p>
+                            <div className="text-left">
+                              <h4 className="text-xs font-bold text-white leading-tight">@{activeChatContact.username}</h4>
+                              <p className="text-[10px] text-slate-500 font-mono mt-0.5">{activeChatContact.bio || 'Secure Contact'}</p>
                             </div>
                           </div>
-
-                          <div className="flex gap-2">
-                            <button 
+                          <div className="flex items-center gap-2">
+                            <button
                               onClick={() => {
-                                setRoomName(`Direct-${[userName, activeChatContact.username].map(n => n.toLowerCase().replace(/[^a-z0-9_-]/g, '-')).sort().join('-')}`);
-                                setCallType('video');
-                                setCurrentView('connecting');
-                              }}
-                              className="nx-btn nx-btn-primary text-[10px] py-1.5 px-3 flex items-center gap-1"
-                            >
-                              <Video className="w-3.5 h-3.5" /> Video Call
-                            </button>
-                            <button 
-                              onClick={() => {
-                                setRoomName(`Direct-${[userName, activeChatContact.username].map(n => n.toLowerCase().replace(/[^a-z0-9_-]/g, '-')).sort().join('-')}`);
                                 setCallType('voice');
-                                setCurrentView('connecting');
+                                callContact(activeChatContact.username);
                               }}
-                              className="nx-btn nx-btn-ghost text-[10px] py-1.5 px-3 flex items-center gap-1"
+                              className="w-8 h-8 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-indigo-400 hover:text-white hover:bg-indigo-500/20 hover:border-indigo-500/30 transition shadow-md cursor-pointer"
+                              title="Voice Call"
                             >
-                              <Headphones className="w-3.5 h-3.5" /> Voice Call
+                              <PhoneCall className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                setCallType('video');
+                                callContact(activeChatContact.username);
+                              }}
+                              className="w-8 h-8 rounded-xl bg-[var(--nx-primary-soft)] border border-[var(--nx-primary)]/20 flex items-center justify-center text-[var(--nx-primary)] hover:text-white hover:bg-[var(--nx-primary)]/20 hover:border-[var(--nx-primary)]/30 transition shadow-md cursor-pointer animate-pulse"
+                              title="Video Call"
+                            >
+                              <Video className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
 
-                        {/* Message list */}
                         <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2.5 pb-3">
+                          {/* Pending file requests from this user */}
+                          {pendingFiles.filter(f => f.sender.toLowerCase() === activeChatContact.username.toLowerCase()).map(f => {
+                            const isStale = f.created_at && (Date.now() - new Date(f.created_at).getTime() > 10 * 60 * 1000);
+                            return (
+                            <div 
+                              key={f.id}
+                              className="p-3.5 rounded-2xl border border-[var(--nx-primary)]/20 mb-3 flex flex-col gap-3 text-left"
+                              style={{
+                                background: 'linear-gradient(145deg, rgba(44, 37, 35, 0.95) 0%, rgba(28, 22, 20, 0.98) 100%)',
+                                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)'
+                              }}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="p-2.5 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-lg">
+                                  📁
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-2xs font-bold text-white truncate">{f.file_name}</p>
+                                  <p className="text-[10px]" style={{ color: 'rgba(255, 212, 172, 0.6)' }}>
+                                    Incoming Secure File · {(f.file_size / (1024*1024)).toFixed(2)} MB
+                                  </p>
+                                </div>
+                              </div>
+                              {isStale && (
+                                <p className="text-[10px] px-2 py-1.5 rounded-lg flex items-center gap-1.5" style={{ background: 'rgba(234, 179, 8, 0.08)', color: '#fbbf24', border: '1px solid rgba(234, 179, 8, 0.15)' }}>
+                                  <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                                  Sender may be offline — transfer might not start
+                                </p>
+                              )}
+                              <div className="flex items-center gap-2">
+                                <button 
+                                  onClick={() => acceptFileTransfer(f)}
+                                  className="flex-1 py-2 rounded-xl text-3xs font-bold text-white transition-all hover:brightness-110"
+                                  style={{ background: 'linear-gradient(135deg, #16a34a, #15803d)' }}
+                                >
+                                  ✅ Accept Transfer
+                                </button>
+                                <button 
+                                  onClick={() => declineFileTransfer(f)}
+                                  className="py-2 px-4 rounded-xl text-3xs font-bold transition hover:bg-white/5"
+                                  style={{ border: '1px solid rgba(239, 68, 68, 0.3)', color: '#fca5a5' }}
+                                >
+                                  ❌ Decline
+                                </button>
+                              </div>
+                            </div>
+                            );
+                          })}
+
                           {(lobbyChats[activeChatContact.username] || []).length === 0 ? (
                             <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center opacity-40">
                               <MessageSquare className="w-10 h-10 text-slate-500" />
@@ -2366,13 +3441,91 @@ export default function App() {
                           )}
                         </div>
 
+                        {/* File Transfer Progress Card */}
+                        {fileTransferProgress && fileTransferProgress.status !== 'idle' && (
+                          <div 
+                            className="p-3.5 rounded-2xl border mb-3 flex flex-col gap-2 text-left"
+                            style={{
+                              background: 'rgba(44, 37, 35, 0.95)',
+                              borderColor: fileTransferProgress.status === 'completed' ? 'rgba(16, 185, 129, 0.3)' :
+                                           fileTransferProgress.status === 'failed' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255, 212, 172, 0.2)',
+                              boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4)'
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm">
+                                  {fileTransferProgress.status === 'completed' ? '✅' :
+                                   fileTransferProgress.status === 'failed' ? '❌' : '📥'}
+                                </span>
+                                <div>
+                                  <p className="text-2xs font-bold text-white truncate max-w-xs">{fileTransferProgress.fileName}</p>
+                                  <p className="text-[10px] text-slate-400 mt-0.5">
+                                    {(fileTransferProgress.fileSize / (1024 * 1024)).toFixed(2)} MB · {fileTransferProgress.role === 'sender' ? 'Uploading (P2P)' : 'Downloading (P2P)'}
+                                  </p>
+                                </div>
+                              </div>
+                              <span className="text-3xs text-slate-500 font-mono">{fileTransferProgress.speed}</span>
+                            </div>
+
+                            {/* Progress bar */}
+                            {fileTransferProgress.status !== 'failed' && (
+                              <div className="w-full bg-white/5 rounded-full h-1.5 overflow-hidden border border-white/5">
+                                <div 
+                                  className="h-full rounded-full transition-all duration-300"
+                                  style={{ 
+                                    width: `${fileTransferProgress.progress}%`,
+                                    background: fileTransferProgress.status === 'completed' ? '#10b981' : '#FFD4AC' 
+                                  }}
+                                />
+                              </div>
+                            )}
+
+                            <div className="flex justify-between items-center text-3xs">
+                              <span className="font-semibold" style={{ 
+                                color: fileTransferProgress.status === 'completed' ? '#34d399' :
+                                       fileTransferProgress.status === 'failed' ? '#f87171' : '#FFD4AC'
+                              }}>
+                                {fileTransferProgress.status === 'connecting' && 'Negotiating direct channel...'}
+                                {fileTransferProgress.status === 'transferring' && `Streaming... ${fileTransferProgress.progress}%`}
+                                {fileTransferProgress.status === 'completed' && 'Completed'}
+                                {fileTransferProgress.status === 'failed' && 'Transfer failed'}
+                              </span>
+                              {(fileTransferProgress.status === 'transferring' || fileTransferProgress.status === 'connecting') ? (
+                                <button 
+                                  onClick={() => cancelFileTransfer(activeChatContact?.username || '')}
+                                  className="text-rose-400 hover:text-rose-300 font-bold transition px-2 py-0.5 rounded border border-rose-500/20 bg-rose-500/5 hover:bg-rose-500/10 text-4xs uppercase tracking-wider"
+                                >
+                                  Cancel
+                                </button>
+                              ) : (
+                                <button 
+                                  onClick={() => setFileTransferProgress(null)}
+                                  className="text-slate-400 hover:text-white font-semibold transition"
+                                >
+                                  Dismiss
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
                         {/* Message Input */}
-                        <div className="flex gap-2 pt-2 border-t border-white/5">
+                        <div className="flex gap-2 pt-2 border-t border-white/5 items-center">
+                          <label className="nx-btn-icon cursor-pointer flex items-center justify-center px-3 py-2 bg-white/5 hover:bg-white/10 transition border border-white/10 rounded-xl" title="Send Secure File (P2P)">
+                            <Paperclip className="w-4 h-4 text-slate-300" />
+                            <input 
+                              id="secure-file-input"
+                              type="file" 
+                              className="hidden" 
+                              onChange={handleFileSelected} 
+                            />
+                          </label>
                           <input 
                             className="nx-input flex-1 text-xs" 
                             value={lobbyChatInput}
                             onChange={e => setLobbyChatInput(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendLobbyChat(); } }}
+                            onKeyDown={e => { if (chatSettings.pressEnterToSend && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendLobbyChat(); } }}
                             placeholder={`Message ${activeChatContact.username}...`} 
                           />
                           <button 
@@ -2918,7 +4071,7 @@ export default function App() {
                   { id: 'whiteboard',   icon: Edit2,         label: 'Board' },
                   { id: 'participants', icon: Users,          label: 'Peers' },
                   { id: 'contacts',     icon: BookUser,       label: 'Book' },
-                  { id: 'profile',      icon: User,           label: 'Me' },
+                  { id: 'profile',      icon: Sliders,        label: 'Config' },
                   { id: 'control',      icon: Lock,          label: 'Ctrl' },
                 ] as { id: Tab; icon: any; label: string; badge?: number }[]).map(t => (
                   <button key={t.id} onClick={() => setActiveTab(t.id)}
@@ -3059,7 +4212,7 @@ export default function App() {
                     <div className="flex gap-2 mt-auto pt-2 border-t border-white/5">
                       <input className="nx-input flex-1 text-xs" value={chatInput}
                         onChange={e => setChatInput(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
+                        onKeyDown={e => { if (chatSettings.pressEnterToSend && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
                         placeholder="Message…" />
                       <button onClick={sendChat} disabled={!chatInput.trim()}
                         className="nx-btn-icon active" style={{ padding: '10px 12px' }}>
@@ -3176,33 +4329,11 @@ export default function App() {
 
                 {activeTab === 'profile' && (
                   <div className="flex flex-col gap-4">
-                    <p className="nx-section-header"><User className="w-3 h-3" /> Profile</p>
-                    <div className="flex flex-col items-center gap-3 text-center">
-                      <label className="w-24 h-24 rounded-full flex items-center justify-center cursor-pointer overflow-hidden transition-all hover:scale-105"
-                        style={{ background: 'var(--nx-teal-soft)', border: '2px solid var(--nx-primary)' }}>
-                        {profile.profilePic ? (
-                          <img src={profile.profilePic} alt="Profile" className="w-full h-full object-cover" />
-                        ) : (
-                          <ImagePlus className="w-7 h-7 text-[var(--nx-primary)]" />
-                        )}
-                        <input type="file" accept="image/*" className="hidden"
-                          onChange={e => handleProfilePicUpload(e.target.files?.[0])} />
-                      </label>
-                      <div className="w-full">
-                        <label className="nx-input-label text-left">Username</label>
-                        <input className="nx-input mb-3" value={profile.username}
-                          onChange={e => {
-                            setProfile(prev => ({ ...prev, username: e.target.value }));
-                            setUserName(e.target.value || userName);
-                          }} />
-                        <label className="nx-input-label text-left">Bio</label>
-                        <textarea className="nx-input" rows={4} value={profile.bio}
-                          onChange={e => setProfile(prev => ({ ...prev, bio: e.target.value.slice(0, 160) }))}
-                          placeholder="A short private profile note." />
-                      </div>
-                      <button className="nx-btn nx-btn-primary w-full text-2xs" onClick={() => pushProfileToDB()}>
-                        <Save className="w-3.5 h-3.5" /> Save & Sync Profile
-                      </button>
+                    <div className="flex items-center justify-between pb-1 border-b border-white/5 mb-1">
+                      <p className="nx-section-header flex items-center gap-1.5 m-0"><Sliders className="w-3.5 h-3.5 text-[var(--nx-primary)]" /> System Config</p>
+                    </div>
+                    <div className="max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+                      {renderSettingsArea()}
                     </div>
                   </div>
                 )}

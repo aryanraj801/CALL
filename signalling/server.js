@@ -5,6 +5,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import webpush from 'web-push';
 
@@ -23,8 +24,8 @@ app.use(cors({ origin: ALLOWED_ORIGIN, credentials: true }));
 // ── WEB PUSH / VAPID ─────────────────────────────────────────────────────────
 // Keys are generated ONCE with:  node --input-type=module -e "import wp from 'web-push'; const k=wp.generateVAPIDKeys(); console.log(JSON.stringify(k));"
 // Then stored permanently in the .env file so the same key pair is reused.
-const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || 'BHCb5s1JUXR9RujuTIpjIX5J3B_FM-BE0gq9zLHUYYKLZT6R8tnvmiWgV63cMDp6E3CvAnZm-UcFDzmKoQY1vEY';
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || 'FHCYgaulttI0kCEn-6eJ1ToEM7yAOMk07UqrQP024FU';
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || 'BH6MzhQZspefYizh2fqf4sekOsVWaDXUd31RNyACDGgecTC31eAvA4iGS_MyzpYknuNXgx2zojIUSQ3M9ubtshA';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '0EhREuRxRzyg-Bv2Ot2r5IT5eGlWnSUkE6sZoLIS_9s';
 const VAPID_EMAIL   = process.env.VAPID_EMAIL       || 'mailto:admin@nexalink.app';
 
 try {
@@ -35,27 +36,80 @@ try {
 }
 
 // Push subscription store:  username (lowercase) → PushSubscription object
-// In production this should be persisted in a database.
-const pushSubscriptions = {};   // { username: PushSubscription }
+// Persisted to disk so subscriptions survive server restarts.
+const PUSH_SUBS_FILE = path.join(__dirname, '.push_subscriptions.json');
+let pushSubscriptions = {};   // { username: PushSubscription }
+
+/** Load push subscriptions from persistent JSON file on startup */
+function loadPushSubscriptions() {
+  try {
+    if (fs.existsSync(PUSH_SUBS_FILE)) {
+      const raw = fs.readFileSync(PUSH_SUBS_FILE, 'utf-8');
+      pushSubscriptions = JSON.parse(raw);
+      console.log(`[WebPush] Loaded ${Object.keys(pushSubscriptions).length} persisted push subscription(s)`);
+    }
+  } catch (err) {
+    console.warn('[WebPush] Failed to load persisted subscriptions:', err.message);
+    pushSubscriptions = {};
+  }
+}
+
+/** Persist current push subscriptions to disk */
+function savePushSubscriptions() {
+  try {
+    fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(pushSubscriptions, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('[WebPush] Failed to persist subscriptions:', err.message);
+  }
+}
+
+// Load on startup
+loadPushSubscriptions();
 
 /**
  * Send a Web Push notification to a user who may be offline.
  * Silently no-ops if the user has no push subscription.
  */
 async function sendPush(targetUsername, payload) {
-  const sub = pushSubscriptions[targetUsername?.toLowerCase()];
-  if (!sub) return;  // user hasn't subscribed or is online
-  try {
-    await webpush.sendNotification(sub, JSON.stringify(payload));
-    console.log(`[WebPush] Push sent to <${targetUsername}>`);
-  } catch (err) {
-    if (err.statusCode === 410) {
-      // Subscription expired — remove it
-      delete pushSubscriptions[targetUsername.toLowerCase()];
-      console.log(`[WebPush] Removed expired subscription for <${targetUsername}>`);
-    } else {
-      console.error(`[WebPush] Failed to send push to <${targetUsername}>:`, err.message);
+  const key = targetUsername?.toLowerCase();
+  const subs = pushSubscriptions[key];
+  if (!subs) return;
+
+  // Handle backward compatibility (single subscription or array)
+  const subArray = Array.isArray(subs) ? subs : [subs];
+  if (subArray.length === 0) return;
+
+  console.log(`[WebPush] Sending push to ${subArray.length} active session endpoint(s) for <${targetUsername}>`);
+
+  const promises = subArray.map(async (sub, idx) => {
+    try {
+      await webpush.sendNotification(sub, JSON.stringify(payload));
+      console.log(`[WebPush] Push delivered to session endpoint #${idx + 1} for <${targetUsername}>`);
+    } catch (err) {
+      if (err.statusCode === 410 || err.statusCode === 404) {
+        console.log(`[WebPush] Session endpoint #${idx + 1} for <${targetUsername}> expired (410/404)`);
+        return { expired: true, endpoint: sub.endpoint };
+      } else {
+        console.error(`[WebPush] Failed at session endpoint #${idx + 1} for <${targetUsername}>:`, err.message);
+      }
     }
+    return { expired: false };
+  });
+
+  const results = await Promise.all(promises);
+  const expiredEndpoints = results.filter(r => r.expired).map(r => r.endpoint);
+
+  if (expiredEndpoints.length > 0) {
+    if (Array.isArray(pushSubscriptions[key])) {
+      pushSubscriptions[key] = pushSubscriptions[key].filter(sub => !expiredEndpoints.includes(sub.endpoint));
+      if (pushSubscriptions[key].length === 0) {
+        delete pushSubscriptions[key];
+      }
+    } else if (expiredEndpoints.includes(pushSubscriptions[key].endpoint)) {
+      delete pushSubscriptions[key];
+    }
+    savePushSubscriptions();
+    console.log(`[WebPush] Cleaned up ${expiredEndpoints.length} expired session subscription(s) for <${targetUsername}>`);
   }
 }
 
@@ -81,15 +135,59 @@ app.post('/api/push/subscribe', (req, res) => {
     return res.status(400).json({ error: 'username and subscription.endpoint required' });
   }
   const key = username.trim().toLowerCase();
-  pushSubscriptions[key] = subscription;
-  console.log(`[WebPush] Subscription saved for <${key}>`);
+
+  // Initialize/migrate subscription to array format
+  if (!Array.isArray(pushSubscriptions[key])) {
+    if (pushSubscriptions[key] && typeof pushSubscriptions[key] === 'object' && pushSubscriptions[key].endpoint) {
+      pushSubscriptions[key] = [pushSubscriptions[key]];
+    } else {
+      pushSubscriptions[key] = [];
+    }
+  }
+
+  // Prevent duplicates of the exact same subscription endpoint
+  const index = pushSubscriptions[key].findIndex(sub => sub.endpoint === subscription.endpoint);
+  if (index !== -1) {
+    pushSubscriptions[key][index] = subscription;
+  } else {
+    pushSubscriptions[key].push(subscription);
+    // Limit to max 5 sessions to prevent stale array leaks
+    if (pushSubscriptions[key].length > 5) {
+      pushSubscriptions[key].shift();
+    }
+  }
+
+  savePushSubscriptions();
+  console.log(`[WebPush] Subscription saved for <${key}>. Active endpoints: ${pushSubscriptions[key].length}`);
   res.json({ ok: true });
 });
 
 /** Client calls this on logout / when revoking permission */
 app.delete('/api/push/subscribe', (req, res) => {
-  const { username } = req.body || {};
-  if (username) delete pushSubscriptions[username.trim().toLowerCase()];
+  const { username, subscription } = req.body || {};
+  if (!username) {
+    return res.status(400).json({ error: 'username required' });
+  }
+  const key = username.trim().toLowerCase();
+
+  if (pushSubscriptions[key]) {
+    if (subscription?.endpoint) {
+      // Unsubscribe only the specific active browser session
+      if (Array.isArray(pushSubscriptions[key])) {
+        pushSubscriptions[key] = pushSubscriptions[key].filter(sub => sub.endpoint !== subscription.endpoint);
+        if (pushSubscriptions[key].length === 0) {
+          delete pushSubscriptions[key];
+        }
+      } else if (pushSubscriptions[key].endpoint === subscription.endpoint) {
+        delete pushSubscriptions[key];
+      }
+    } else {
+      // Complete unsubscribe/signout of all devices
+      delete pushSubscriptions[key];
+    }
+    savePushSubscriptions();
+    console.log(`[WebPush] Unsubscribed active session for <${key}>`);
+  }
   res.json({ ok: true });
 });
 
@@ -514,6 +612,14 @@ io.on('connection', (socket) => {
     if (targetSocketId) {
       io.to(targetSocketId).emit('contact_added_notification', { addedBy });
       console.log(`[Presence] Contact alert sent: ${addedBy} -> ${targetUsername}`);
+    } else {
+      // Offline — send Web Push so the user knows they were added
+      console.log(`[Presence] <${targetUsername}> is offline — sending Web Push for add_contact`);
+      sendPush(key, {
+        type:   'contact',
+        sender: addedBy,
+        body:   `${addedBy} added you as a contact on NexaLink`,
+      });
     }
   });
 
@@ -526,12 +632,91 @@ io.on('connection', (socket) => {
       io.to(targetSocketId).emit('direct_message', { senderUsername, senderName, text, time });
       console.log(`[Presence] Direct message routed to ${targetUsername}`);
     } else {
+      // Offline — send Web Push with the actual message preview
+      const displaySender = senderName || senderUsername || 'Peer';
       sendPush(key, {
         type: 'chat',
-        sender: senderName || senderUsername || 'Peer',
-        body: 'NexaLink received a direct message',
-        desc: text.slice(0, 100),
+        sender: displaySender,
+        body: text.slice(0, 120),
       });
+    }
+  });
+
+  // --- Secure File Transfer Relays ---
+  socket.on('file_transfer_initiate', ({ transferId, senderUsername, recipientUsername, fileName, fileSize, fileType }) => {
+    if (typeof recipientUsername !== 'string' || !recipientUsername.trim()) return;
+    const key = recipientUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+
+    const payload = {
+      transferId,
+      senderUsername,
+      recipientUsername,
+      fileName,
+      fileSize,
+      fileType
+    };
+
+    if (targetSocketId) {
+      console.log(`[FileTransfer] Initiated from <${senderUsername}> to online <${recipientUsername}> — ID: ${transferId}`);
+      io.to(targetSocketId).emit('file_transfer_request', payload);
+    } else {
+      console.log(`[FileTransfer] Target <${recipientUsername}> is offline — queueing on server and sending Web Push`);
+      sendPush(key, {
+        type: 'file_transfer',
+        sender: senderUsername,
+        body: 'NexaLink incoming secure file transfer',
+        fileName,
+        fileSize,
+        transferId
+      });
+    }
+  });
+
+  socket.on('file_transfer_response', ({ transferId, status, recipientUsername, senderUsername }) => {
+    if (typeof senderUsername !== 'string') return;
+    const key = senderUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      console.log(`[FileTransfer] Response for ID ${transferId} from <${recipientUsername}>: ${status}`);
+      io.to(targetSocketId).emit('file_transfer_response', { transferId, status, recipientUsername });
+    }
+  });
+
+  socket.on('file_offer', ({ targetUsername, offer, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('file_offer', { fromUsername: senderUsername, offer });
+    }
+  });
+
+  socket.on('file_answer', ({ targetUsername, answer, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('file_answer', { fromUsername: senderUsername, answer });
+    }
+  });
+
+  socket.on('file_ice_candidate', ({ targetUsername, candidate, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('file_ice_candidate', { fromUsername: senderUsername, candidate });
+    }
+  });
+
+  socket.on('file_transfer_cancel', ({ transferId, targetUsername, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      console.log(`[FileTransfer] Cancellation for ID ${transferId} relayed from <${senderUsername}> to <${targetUsername}>`);
+      io.to(targetSocketId).emit('file_transfer_cancel', { transferId, senderUsername });
     }
   });
 

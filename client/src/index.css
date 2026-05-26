@@ -1695,3 +1695,116 @@ body,
   margin: 0;
 }
 
+/* ============================================================
+   LIGHT MODE PREMIUM THEME OVERRIDES
+   ============================================================ */
+:root.light-mode {
+  --glass-bg: rgba(255, 255, 255, 0.88);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --glass-hover: rgba(0, 0, 0, 0.04);
+}
+
+:root.light-mode body {
+  background:
+    radial-gradient(circle at 15% 10%, rgba(49, 196, 190, 0.06), transparent 26%),
+    radial-gradient(circle at 88% 18%, rgba(129, 140, 248, 0.06), transparent 30%),
+    linear-gradient(135deg, #f8fafc 0%, #f1f5f9 52%, #e2e8f0 100%) !important;
+  color: #0f172a !important;
+}
+
+:root.light-mode .text-white,
+:root.light-mode h1,
+:root.light-mode h2,
+:root.light-mode h3,
+:root.light-mode h4,
+:root.light-mode p.font-display {
+  color: #0f172a !important;
+}
+
+:root.light-mode .text-slate-400,
+:root.light-mode .text-slate-500,
+:root.light-mode .text-slate-300 {
+  color: #475569 !important;
+}
+
+:root.light-mode .nx-input {
+  color: #0f172a !important;
+  background: rgba(0, 0, 0, 0.02) !important;
+  border-color: rgba(0, 0, 0, 0.12) !important;
+}
+
+:root.light-mode .nx-input:hover {
+  border-color: rgba(0, 0, 0, 0.22) !important;
+}
+
+:root.light-mode .nx-input:focus {
+  background: #ffffff !important;
+  border-color: var(--indigo-500) !important;
+}
+
+:root.light-mode .nx-input-label {
+  color: #334155 !important;
+}
+
+:root.light-mode .glass,
+:root.light-mode .glass-card {
+  background: rgba(255, 255, 255, 0.88) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.02) !important;
+}
+
+:root.light-mode .nx-tab {
+  color: #64748b;
+}
+
+:root.light-mode .nx-tab:hover {
+  color: #334155;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+:root.light-mode .nx-tab.active {
+  color: var(--indigo-600);
+  background: rgba(99, 102, 241, 0.06);
+  border-bottom-color: var(--indigo-600);
+}
+
+:root.light-mode [class*="border-white/"] {
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+:root.light-mode .nx-tooltip::before {
+  background: rgba(15, 23, 42, 0.96) !important;
+  color: #f8fafc !important;
+}
+
+:root.light-mode ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15) !important;
+}
+
+:root.light-mode ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25) !important;
+}
+
+:root.light-mode .app-header {
+  background: rgba(255, 255, 255, 0.85) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+:root.light-mode .call-sidebar {
+  border-left-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+:root.light-mode .chat-lobby-sidebar {
+  border-right-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+:root.light-mode .nx-btn-icon:not(.active) {
+  color: #475569 !important;
+  background: rgba(0, 0, 0, 0.03) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+:root.light-mode .nx-btn-icon:not(.active):hover {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+

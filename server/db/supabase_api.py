@@ -227,7 +227,7 @@ def get_whiteboard_snapshots_db(room_name):
 
 
 # 11. Save or Update User Profile
-def save_user_profile_db(username, bio, profile_pic):
+def save_user_profile_db(username, bio, profile_pic, theme=None, chat_settings=None, notif_settings=None):
     safe_username = urllib.parse.quote(str(username), safe='')
     query_url = f"{SUPABASE_URL}/rest/v1/user_profiles?username=eq.{safe_username}"
     existing = _http_request(query_url, "GET")
@@ -235,10 +235,16 @@ def save_user_profile_db(username, bio, profile_pic):
     payload = {
         "username": username,
         "bio": bio,
-        "profile_pic": profile_pic,
-        "updated_at": datetime.utcnow().isoformat()
+        "profile_pic": profile_pic
     }
     
+    if theme is not None:
+        payload["theme"] = theme
+    if chat_settings is not None:
+        payload["chat_settings"] = chat_settings
+    if notif_settings is not None:
+        payload["notif_settings"] = notif_settings
+        
     if existing:
         update_url = f"{SUPABASE_URL}/rest/v1/user_profiles?username=eq.{safe_username}"
         res = _http_request(update_url, "PATCH", payload)
@@ -436,3 +442,36 @@ def get_all_direct_call_logs_db(username: str, limit: int = 50):
         f"&limit={int(limit)}"
     )
     return _http_request(url, "GET")
+
+
+# 23. Create file transfer record
+def create_file_transfer_db(sender: str, recipient: str, file_name: str, file_size: int, file_type: str):
+    conversation_key = "|".join(sorted([sender.lower(), recipient.lower()]))
+    payload = {
+        "conversation_key": conversation_key,
+        "sender": sender,
+        "recipient": recipient,
+        "file_name": file_name,
+        "file_size": int(file_size),
+        "file_type": file_type,
+        "status": "pending"
+    }
+    url = f"{SUPABASE_URL}/rest/v1/file_transfers"
+    return _http_request(url, "POST", payload)
+
+
+# 24. Get all pending file transfers for a recipient
+def get_pending_file_transfers_db(username: str):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/file_transfers?recipient=eq.{safe_user}&status=eq.pending&order=created_at.asc"
+    return _http_request(url, "GET")
+
+
+# 25. Update status of a file transfer request
+def update_file_transfer_status_db(transfer_id: int, status: str):
+    payload = {
+        "status": status
+    }
+    url = f"{SUPABASE_URL}/rest/v1/file_transfers?id=eq.{int(transfer_id)}"
+    return _http_request(url, "PATCH", payload)
+

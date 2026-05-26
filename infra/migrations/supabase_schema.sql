@@ -9,8 +9,23 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
+    bio TEXT,
+    profile_pic TEXT,
+    theme TEXT DEFAULT 'dark',
+    chat_settings JSONB DEFAULT '{"pressEnterToSend": true, "soundEnabled": true, "typingIndicators": true}',
+    notif_settings JSONB DEFAULT '{"desktopEnabled": true, "showToastAlerts": true, "pushWakingEnabled": true}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Ensure columns exist on pre-existing tables in live Supabase instances
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS bio TEXT;
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS profile_pic TEXT;
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS theme TEXT DEFAULT 'dark';
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS chat_settings JSONB DEFAULT '{"pressEnterToSend": true, "soundEnabled": true, "typingIndicators": true}';
+ALTER TABLE public.user_profiles ADD COLUMN IF NOT EXISTS notif_settings JSONB DEFAULT '{"desktopEnabled": true, "showToastAlerts": true, "pushWakingEnabled": true}';
+
+-- Force Supabase PostgREST to reload its schema cache to pick up the new columns immediately
+NOTIFY pgrst, 'reload schema';
 
 -- Row Level Security (RLS)
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
@@ -18,13 +33,11 @@ ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 -- Drop existing policies if they exist
 DROP POLICY IF EXISTS "Allow public read access to profiles" ON public.user_profiles;
 DROP POLICY IF EXISTS "Allow users to update their own profile" ON public.user_profiles;
+DROP POLICY IF EXISTS "Allow users to update your own profile" ON public.user_profiles;
 
 -- Create policies
 CREATE POLICY "Allow public read access to profiles" 
-ON public.user_profiles FOR SELECT USING (true);
-
-CREATE POLICY "Allow users to update your own profile" 
-ON public.user_profiles FOR UPDATE USING (auth.uid() = id);
+ON public.user_profiles FOR ALL USING (true);
 
 -- Trigger to automatically map Auth users to Public user_profiles upon signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -173,3 +186,27 @@ CREATE TABLE IF NOT EXISTS public.contacts (
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow contacts access" ON public.contacts;
 CREATE POLICY "Allow contacts access" ON public.contacts FOR ALL USING (true);
+
+
+-- 10. File Transfers Table (Tracks metadata & status of secure transfers)
+CREATE TABLE IF NOT EXISTS public.file_transfers (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_key VARCHAR(120) NOT NULL,
+    sender VARCHAR(50) NOT NULL,
+    recipient VARCHAR(50) NOT NULL,
+    file_name TEXT NOT NULL,
+    file_size BIGINT NOT NULL,
+    file_type VARCHAR(100) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending', -- 'pending', 'accepted', 'declined'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_transfers_recipient_status
+    ON public.file_transfers (recipient, status);
+CREATE INDEX IF NOT EXISTS idx_file_transfers_convo
+    ON public.file_transfers (conversation_key, created_at DESC);
+
+ALTER TABLE public.file_transfers ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow file transfers access" ON public.file_transfers;
+CREATE POLICY "Allow file transfers access" ON public.file_transfers FOR ALL USING (true);
+
