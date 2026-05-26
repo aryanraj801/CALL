@@ -888,7 +888,7 @@ input[type='checkbox']:checked::after {
 
 .active-call-shell {
   width: 100%;
-  overflow: hidden;
+  overflow-y: auto;
   min-height: 0;
   border-radius: 24px;
   background: rgba(15, 23, 42, 0.72);
@@ -1546,7 +1546,7 @@ body,
 @media (max-width: 1180px) {
   .active-call-shell {
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
   }
 
   .call-sidebar {

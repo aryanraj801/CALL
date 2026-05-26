@@ -441,7 +441,7 @@ io.on('connection', (socket) => {
       if (participant) {
         participant.isSharingScreen = isSharing;
       }
-      io.to(currentRoom).emit('participants_changed', list);
+      socket.to(currentRoom).emit('participants_changed', list);
     }
   });
 
@@ -517,26 +517,20 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('direct_message', ({ recipient, sender, text, time }) => {
-    if (typeof recipient !== 'string' || typeof text !== 'string' || !text.trim()) return;
-    const key = recipient.trim().toLowerCase();
+  socket.on('direct_message', ({ targetUsername, senderUsername, senderName, text, time }) => {
+    if (typeof targetUsername !== 'string' || typeof text !== 'string' || !text.trim()) return;
+    const key = targetUsername.trim().toLowerCase();
     const targetSocketId = onlineUsers[key];
     
-    const msgPayload = {
-      sender: typeof sender === 'string' ? sender.slice(0, 80) : 'Peer',
-      text: text.slice(0, 4000),
-      time: typeof time === 'string' ? time.slice(0, 20) : '',
-    };
-    
     if (targetSocketId) {
-      io.to(targetSocketId).emit('incoming_direct_message', msgPayload);
-      console.log(`[Presence] Direct message routed to ${recipient}`);
+      io.to(targetSocketId).emit('direct_message', { senderUsername, senderName, text, time });
+      console.log(`[Presence] Direct message routed to ${targetUsername}`);
     } else {
       sendPush(key, {
         type: 'chat',
-        sender: msgPayload.sender,
+        sender: senderName || senderUsername || 'Peer',
         body: 'NexaLink received a direct message',
-        desc: msgPayload.text.slice(0, 100),
+        desc: text.slice(0, 100),
       });
     }
   });

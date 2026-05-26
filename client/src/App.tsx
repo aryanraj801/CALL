@@ -270,7 +270,7 @@ export default function App() {
 
   const sendLobbyChat = async () => {
     if (!activeChatContact || !lobbyChatInput.trim()) return;
-    const cleanText = lobbyChatInput.trim();
+    const msgText = lobbyChatInput.trim();
     
     try {
       const token = sessionStorage.getItem('nexalink_token') || authToken;
@@ -280,7 +280,7 @@ export default function App() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ recipient: activeChatContact.username, text: cleanText })
+        body: JSON.stringify({ recipient: activeChatContact.username, text: msgText })
       });
       if (!res.ok) {
         throw new Error("Failed to persist message");
@@ -290,8 +290,8 @@ export default function App() {
       
       const msg: ChatMessage = {
         id: String(sentMsg.message.id),
-        sender: userName,
-        text: cleanText,
+        sender: profile.username || userName,
+        text: msgText,
         time: nowTime(),
         self: true
       };
@@ -306,9 +306,10 @@ export default function App() {
       
       if (socket) {
         socket.emit('direct_message', {
-          recipient: activeChatContact.username,
-          sender: userName,
-          text: cleanText,
+          targetUsername: activeChatContact.username,
+          senderUsername: userName,
+          senderName: profile.username || userName,
+          text: msgText,
           time: msg.time
         });
       }
@@ -1033,6 +1034,62 @@ export default function App() {
       showToast('Caller cancelled the call.', 'info');
     };
 
+    const handleDirectMessage = (data: { senderUsername: string; senderName: string; text: string; time: string }) => {
+      const { senderUsername, senderName, text, time } = data;
+
+      const msg: ChatMessage = {
+        id: uid(),
+        sender: senderName,
+        text,
+        time,
+        self: false
+      };
+
+      // Check if contact exists
+      setContacts(prev => {
+        if (!prev.some(c => c.username.toLowerCase() === senderUsername.toLowerCase())) {
+          return [...prev, { id: uid(), username: senderUsername, bio: 'Added from message', profilePic: '' }];
+        }
+        return prev;
+      });
+
+      setLobbyChats(prev => {
+        const chatHistory = prev[senderUsername] || [];
+        return {
+          ...prev,
+          [senderUsername]: [...chatHistory, msg]
+        };
+      });
+
+      // Update unread count if we are not actively chatting with them
+      if (!activeChatContact || activeChatContact.username.toLowerCase() !== senderUsername.toLowerCase() || lobbySubView !== 'chat_lobby') {
+        setUnreadChatCounts(prev => {
+          const currentUnread = prev[senderUsername] || 0;
+          return {
+            ...prev,
+            [senderUsername]: currentUnread + 1
+          };
+        });
+
+        // Add inbox notification
+        setInboxNotifications(prev => [{
+          id: uid(),
+          type: 'chat',
+          sender: senderUsername,
+          title: `New message from ${senderName}`,
+          desc: text,
+          time: nowTime(),
+          read: false
+        }, ...prev.slice(0, 49)]);
+
+        notify('update', {
+          sender: senderUsername,
+          body: `New message: ${text}`,
+          tag: `nexalink-lobby-${senderUsername}`,
+        });
+      }
+    };
+
     const handleContactAddedNotification = (data: { addedBy: string }) => {
       showToast(`${data.addedBy} added you as a contact!`, 'success');
       loadContactsFromServer();
@@ -1048,59 +1105,18 @@ export default function App() {
       }, ...prev.slice(0, 49)]);
     };
 
-    const handleIncomingDirectMessage = (data: { sender: string; text: string; time: string }) => {
-      const newMsg: ChatMessage = {
-        id: uid(),
-        sender: data.sender,
-        text: data.text,
-        time: data.time,
-        self: false
-      };
-      
-      setLobbyChats(prev => {
-        const chatHistory = prev[data.sender] || [];
-        return {
-          ...prev,
-          [data.sender]: [...chatHistory, newMsg]
-        };
-      });
-      
-      if (!activeChatContact || activeChatContact.username.toLowerCase() !== data.sender.toLowerCase()) {
-        setUnreadChatCounts(prev => ({
-          ...prev,
-          [data.sender]: (prev[data.sender] || 0) + 1
-        }));
-        
-        setInboxNotifications(prev => [{
-          id: uid(),
-          type: 'chat' as const,
-          sender: data.sender,
-          title: `New DM from ${data.sender}`,
-          desc: data.text.slice(0, 60),
-          time: nowTime(),
-          read: false
-        }, ...prev.slice(0, 49)]);
-        
-        notify('update', {
-          sender: data.sender,
-          body: 'NexaLink received a direct message',
-          tag: `nexalink-lobby-${data.sender}`,
-        });
-      }
-    };
-
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_cancelled', handleCallCancelled);
+    socket.on('direct_message', handleDirectMessage);
     socket.on('contact_added_notification', handleContactAddedNotification);
-    socket.on('incoming_direct_message', handleIncomingDirectMessage);
     return () => {
       socket.off('incoming_call', handleIncomingCall);
       socket.off('call_cancelled', handleCallCancelled);
+      socket.off('direct_message', handleDirectMessage);
       socket.off('contact_added_notification', handleContactAddedNotification);
-      socket.off('incoming_direct_message', handleIncomingDirectMessage);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, userName, activeChatContact]);
+  }, [socket, userName, activeChatContact, lobbySubView, contacts]);
 
 
   /* ── Video refs ─────────────────────── */
@@ -1117,7 +1133,7 @@ export default function App() {
 
   /* ── Media init ─────────────────────── */
   const handleInitMedia = async () => {
-    const res = await initMedia();
+    const res = await initMedia(callType);
     if (res) {
       showToast('Camera & mic initialised successfully.', 'success');
     } else {

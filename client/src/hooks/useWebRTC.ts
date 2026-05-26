@@ -147,7 +147,7 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
     setVideoEnabled(stream?.getVideoTracks()[0]?.enabled ?? false);
   };
 
-  const initMedia = async () => {
+  const initMedia = async (callType: 'voice' | 'video' = 'video') => {
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
@@ -157,7 +157,7 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: callType === 'video',
         audio: true,
       });
       setLocalStream(stream);
@@ -165,6 +165,10 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       return stream;
     } catch (err) {
       console.error('Failed to get user media devices:', err);
+      if (callType === 'voice') {
+          // If only voice was requested but failed, we cannot provide a canvas fallback for audio
+          return null;
+      }
       // Mock stream for testing in non-camera environments
       const canvas = document.createElement('canvas');
       canvas.width = 640;
@@ -185,25 +189,65 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
   // the AudioContext source binding in useAudioPipeline. Simply toggle .enabled.
   const toggleVideo = async () => {
     if (!localStream) {
-      await initMedia();
+      await initMedia('video');
       return;
     }
     const stream = localStream;
-    const track = stream.getVideoTracks()[0];
-    if (track) {
-      track.enabled = !track.enabled;
-      setVideoEnabled(track.enabled);
+    let track = stream.getVideoTracks()[0];
+
+    // Hardware issue: If the track is completely stopped and released by the browser to turn the camera off
+    // we need a new track. However, replacing tracks breaks DSP, but DSP is audio!
+    // It's perfectly safe to fetch a new video track and replace it.
+    if (!track || track.readyState === 'ended') {
+       try {
+           const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+           const newTrack = newStream.getVideoTracks()[0];
+           stream.addTrack(newTrack);
+
+           // Replace the track in all active RTCPeerConnections
+           Object.values(peerConnectionsRef.current).forEach(pc => {
+             const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+             if (sender) {
+               sender.replaceTrack(newTrack);
+             }
+           });
+
+           setVideoEnabled(true);
+       } catch (err) {
+           console.error('Failed to get video track', err);
+       }
+       return;
+    }
+
+    if (track.enabled) {
+      // Hardware issue: user wants camera physically off (light off)
+      track.stop();
+      stream.removeTrack(track);
+
+      // We must explicitly replace the track in senders with null to stop transmission properly
+      Object.values(peerConnectionsRef.current).forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) {
+           sender.replaceTrack(null);
+        }
+      });
+
+      setVideoEnabled(false);
+    } else {
+      track.enabled = true;
+      setVideoEnabled(true);
     }
   };
 
   const toggleAudio = async () => {
     if (!localStream) {
-      await initMedia();
+      await initMedia('voice');
       return;
     }
     const stream = localStream;
     const track = stream.getAudioTracks()[0];
     if (track) {
+      // We only toggle .enabled for audio to avoid breaking DSP Context bindings
       track.enabled = !track.enabled;
       setAudioEnabled(track.enabled);
     }
