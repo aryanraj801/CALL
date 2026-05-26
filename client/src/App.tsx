@@ -26,6 +26,10 @@ interface ChatMessage {
   text: string;
   time: string;
   self: boolean;
+  isFile?: boolean;
+  fileUrl?: string;
+  fileName?: string;
+  fileType?: string;
 }
 
 type Tab = 'chat' | 'audio' | 'whiteboard' | 'control' | 'participants' | 'profile' | 'contacts';
@@ -777,12 +781,18 @@ export default function App() {
       const data = await res.json();
       const transferId = data.transfer_id;
 
+      const isImage = file.type.startsWith('image/');
+      const fileUrl = URL.createObjectURL(file);
       const msg: ChatMessage = {
         id: `file-init-${transferId}`,
         sender: profile.username || userName,
-        text: `📁 Initiated file transfer request: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`,
+        text: isImage ? '' : `📁 Initiated file transfer request: ${file.name} (${(file.size / (1024*1024)).toFixed(2)} MB)`,
         time: nowTime(),
-        self: true
+        self: true,
+        isFile: true,
+        fileUrl: isImage ? fileUrl : undefined,
+        fileName: file.name,
+        fileType: file.type
       };
 
       setLobbyChats(prev => {
@@ -948,6 +958,7 @@ export default function App() {
   };
 
   const acceptFileTransfer = async (transfer: { id: number; sender: string; file_name: string; file_size: number; file_type: string }) => {
+    selectedFileRef.current = null;
     const transferId = transfer.id;
     try {
       const token = sessionStorage.getItem('nexalink_token') || authToken;
@@ -1026,6 +1037,27 @@ export default function App() {
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+
+            const isImage = transfer.file_type.startsWith('image/');
+            const msg: ChatMessage = {
+              id: `file-recv-${transferId}`,
+              sender: transfer.sender,
+              text: isImage ? '' : `📁 Received file: ${transfer.file_name}`,
+              time: nowTime(),
+              self: false,
+              isFile: true,
+              fileUrl: isImage ? fileUrl : undefined,
+              fileName: transfer.file_name,
+              fileType: transfer.file_type
+            };
+
+            setLobbyChats(prev => {
+              const chatHistory = prev[transfer.sender] || [];
+              return {
+                ...prev,
+                [transfer.sender]: [...chatHistory, msg]
+              };
+            });
 
             setFileTransferProgress(prev => prev ? { ...prev, status: 'completed', progress: 100 } : null);
             showToast(`File download completed: ${transfer.file_name}`, 'success');
@@ -3932,7 +3964,14 @@ export default function App() {
                             (lobbyChats[activeChatContact.username] || []).map(m => (
                               <div key={m.id} className={`chat-bubble ${m.self ? 'self' : 'remote'}`}>
                                 <span className="sender">{m.self ? 'You' : m.sender}</span>
-                                <div className="bubble">{m.text}</div>
+                                {m.isFile && m.fileUrl ? (
+                                  <div className="bubble p-1 bg-transparent border-0">
+                                    <img src={m.fileUrl} alt={m.fileName} className="max-w-full h-auto rounded-lg" style={{ maxHeight: '200px' }} />
+                                    {m.text && <p className="mt-1 text-xs">{m.text}</p>}
+                                  </div>
+                                ) : (
+                                  <div className="bubble">{m.text}</div>
+                                )}
                                 <span className="time">{m.time}</span>
                               </div>
                             ))
@@ -4774,7 +4813,14 @@ export default function App() {
                         chatMessages.map(m => (
                           <div key={m.id} className={`chat-bubble ${m.self ? 'self' : 'remote'}`}>
                             <span className="sender">{m.self ? 'You' : m.sender}</span>
-                            <div className="bubble">{m.text}</div>
+                            {m.isFile && m.fileUrl ? (
+                              <div className="bubble p-1 bg-transparent border-0">
+                                <img src={m.fileUrl} alt={m.fileName} className="max-w-full h-auto rounded-lg" style={{ maxHeight: '200px' }} />
+                                {m.text && <p className="mt-1 text-xs">{m.text}</p>}
+                              </div>
+                            ) : (
+                              <div className="bubble">{m.text}</div>
+                            )}
                             <span className="time">{m.time}</span>
                           </div>
                         ))

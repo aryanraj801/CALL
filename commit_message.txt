@@ -1,7 +1,0 @@
-fix(webrtc): ecosystem audit fixes for signalling and client UI
-
-- signalling: limit push subscriptions to max 5 array elements
-- signalling: safely remove specific push subscriptions on unsubscribe
-- client: implement secure handshake for outgoing calls, requiring explicit accept before connecting to room
-- client: add chat lobby headers with quick dial actions
-- client: fix chat tab badge initialization and increment bug
