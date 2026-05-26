@@ -55,7 +55,7 @@ body {
     linear-gradient(135deg, #111827 0%, #0d1422 52%, #101827 100%);
   color: #f1f5f9;
   margin: 0;
-  overflow: hidden;
+  overflow: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

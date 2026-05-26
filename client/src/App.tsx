@@ -497,7 +497,7 @@ export default function App() {
 
   /* Dynamic Page Scroll Control */
   useEffect(() => {
-    if (inRoom) {
+    if (!authToken) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'auto';
@@ -505,7 +505,7 @@ export default function App() {
     return () => {
       document.body.style.overflow = '';
     };
-  }, [inRoom]);
+  }, [authToken]);
 
   useEffect(() => {
     sessionStorage.setItem('nexalink_contacts', JSON.stringify(contacts));
@@ -1222,7 +1222,7 @@ export default function App() {
      RENDER
   ═══════════════════════════════════════ */
   return (
-    <div className={`min-h-screen flex flex-col nx-app-shell ${inRoom ? 'overflow-hidden' : 'overflow-y-auto'}`} style={{ fontFamily: 'var(--font-sans)' }}>
+    <div className={`min-h-screen flex flex-col nx-app-shell ${!authToken ? 'overflow-hidden' : 'overflow-y-auto'}`} style={{ fontFamily: 'var(--font-sans)' }}>
 
       {/* Toast */}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
