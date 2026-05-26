@@ -735,7 +735,8 @@ export default function App() {
     if (!isCurrentlyHidden) {
       // Trying to hide a stream. Check if that would leave 0 active streams.
       const activeCount = (locallyHiddenPeers.includes('self') ? 0 : 1) + 
-                          participants.filter(p => !locallyHiddenPeers.includes(p.id)).length;
+                          participants.filter(p => !locallyHiddenPeers.includes(p.id)).length +
+                          (screenStream ? 1 : 0);
       if (activeCount <= 1) {
         showToast('At least one active stream must remain visible.', 'error');
         return;
@@ -1780,6 +1781,16 @@ export default function App() {
                         {audioEnabled ? 'Mic: Active' : 'Mic: Muted'}
                       </button>
                     </div>
+                    {audioEnabled && (
+                      <div className="text-3xs font-semibold flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/40 border border-white/5 mt-2 transition-all">
+                        <span className="text-slate-400">Microphone Integrity Check:</span>
+                        {volumeLevel > 2 ? (
+                          <span className="text-emerald-400 flex items-center gap-1">✓ Active Signal Detected ({Math.round(volumeLevel)})</span>
+                        ) : (
+                          <span className="text-amber-400 animate-pulse">Silence / Waiting for Input...</span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Setup & Morphing Controls */}
