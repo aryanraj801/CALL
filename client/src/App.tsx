@@ -266,10 +266,11 @@ export default function App() {
 
   const sendLobbyChat = () => {
     if (!activeChatContact || !lobbyChatInput.trim()) return;
+    const msgText = lobbyChatInput.trim();
     const msg: ChatMessage = {
       id: uid(),
-      sender: myAlias.name,
-      text: lobbyChatInput.trim(),
+      sender: profile.username || userName,
+      text: msgText,
       time: nowTime(),
       self: true
     };
@@ -282,38 +283,15 @@ export default function App() {
     });
     setLobbyChatInput('');
     
-    // Simulate contact responding after 1.5 seconds!
-    setTimeout(() => {
-      const responseText = `Encrypted handshake verified. Got your message: "${msg.text}"`;
-      const replyMsg: ChatMessage = {
-        id: uid(),
-        sender: activeChatContact.username,
-        text: responseText,
-        time: nowTime(),
-        self: false
-      };
-      setLobbyChats(prev => {
-        const chatHistory = prev[activeChatContact.username] || [];
-        return {
-          ...prev,
-          [activeChatContact.username]: [...chatHistory, replyMsg]
-        };
+    if (socket) {
+      socket.emit('direct_message', {
+        targetUsername: activeChatContact.username,
+        senderUsername: userName,
+        senderName: profile.username || userName,
+        text: msgText,
+        time: msg.time
       });
-      // Trigger notification if user is no longer actively looking at their chat
-      setUnreadChatCounts(prev => {
-        const currentUnread = prev[activeChatContact.username] || 0;
-        return {
-          ...prev,
-          [activeChatContact.username]: currentUnread + 1
-        };
-      });
-      // OS popup — fires only if the tab is hidden/blurred
-      notify('update', {
-        sender: activeChatContact.username,
-        body: 'NexaLink received an update',
-        tag: `nexalink-lobby-${activeChatContact.username}`,
-      });
-    }, 1500);
+    }
   };
 
   const loadProfileFromDB = async (targetUser: string) => {
@@ -836,14 +814,72 @@ export default function App() {
       showToast('Caller cancelled the call.', 'info');
     };
 
+    const handleDirectMessage = (data: { senderUsername: string; senderName: string; text: string; time: string }) => {
+      const { senderUsername, senderName, text, time } = data;
+
+      const msg: ChatMessage = {
+        id: uid(),
+        sender: senderName,
+        text,
+        time,
+        self: false
+      };
+
+      // Check if contact exists
+      setContacts(prev => {
+        if (!prev.some(c => c.username.toLowerCase() === senderUsername.toLowerCase())) {
+          return [...prev, { id: uid(), username: senderUsername, bio: 'Added from message', profilePic: '' }];
+        }
+        return prev;
+      });
+
+      setLobbyChats(prev => {
+        const chatHistory = prev[senderUsername] || [];
+        return {
+          ...prev,
+          [senderUsername]: [...chatHistory, msg]
+        };
+      });
+
+      // Update unread count if we are not actively chatting with them
+      if (!activeChatContact || activeChatContact.username.toLowerCase() !== senderUsername.toLowerCase() || lobbySubView !== 'chat_lobby') {
+        setUnreadChatCounts(prev => {
+          const currentUnread = prev[senderUsername] || 0;
+          return {
+            ...prev,
+            [senderUsername]: currentUnread + 1
+          };
+        });
+
+        // Add inbox notification
+        setInboxNotifications(prev => [{
+          id: uid(),
+          type: 'chat',
+          sender: senderUsername,
+          title: `New message from ${senderName}`,
+          desc: text,
+          time: nowTime(),
+          read: false
+        }, ...prev.slice(0, 49)]);
+
+        notify('update', {
+          sender: senderUsername,
+          body: `New message: ${text}`,
+          tag: `nexalink-lobby-${senderUsername}`,
+        });
+      }
+    };
+
     socket.on('incoming_call', handleIncomingCall);
     socket.on('call_cancelled', handleCallCancelled);
+    socket.on('direct_message', handleDirectMessage);
     return () => {
       socket.off('incoming_call', handleIncomingCall);
       socket.off('call_cancelled', handleCallCancelled);
+      socket.off('direct_message', handleDirectMessage);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, userName]);
+  }, [socket, userName, activeChatContact, lobbySubView, contacts]);
 
 
   /* ── Video refs ─────────────────────── */
@@ -860,7 +896,7 @@ export default function App() {
 
   /* ── Media init ─────────────────────── */
   const handleInitMedia = async () => {
-    const res = await initMedia();
+    const res = await initMedia(callType);
     if (res) {
       showToast('Camera & mic initialised successfully.', 'success');
     } else {

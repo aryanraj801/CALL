@@ -441,7 +441,7 @@ io.on('connection', (socket) => {
       if (participant) {
         participant.isSharingScreen = isSharing;
       }
-      io.to(currentRoom).emit('participants_changed', list);
+      socket.to(currentRoom).emit('participants_changed', list);
     }
   });
 
@@ -496,6 +496,14 @@ io.on('connection', (socket) => {
     const targetSocketId = onlineUsers[targetUsername.trim().toLowerCase()];
     if (targetSocketId) {
       io.to(targetSocketId).emit('call_cancelled', { callerId: socket.id });
+    }
+  });
+
+  socket.on('direct_message', ({ targetUsername, senderUsername, senderName, text, time }) => {
+    if (typeof targetUsername !== 'string') return;
+    const targetSocketId = onlineUsers[targetUsername.trim().toLowerCase()];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('direct_message', { senderUsername, senderName, text, time });
     }
   });
 
