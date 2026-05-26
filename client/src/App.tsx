@@ -275,6 +275,15 @@ export default function App() {
     ];
   });
 
+  /* Media & Device State Selectors */
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioInput, setSelectedAudioInput] = useState<string>(() => sessionStorage.getItem('nexalink_selected_mic') || 'default');
+  const [selectedVideoInput, setSelectedVideoInput] = useState<string>(() => sessionStorage.getItem('nexalink_selected_cam') || 'default');
+  const [selectedAudioOutput, setSelectedAudioOutput] = useState<string>(() => sessionStorage.getItem('nexalink_selected_speaker') || 'default');
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+
   // Incoming call modal state
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const [outgoingCall, setOutgoingCall] = useState<OutgoingCall | null>(null);
@@ -1606,10 +1615,16 @@ export default function App() {
     pendingControlRequestFrom, pendingControlRequestType, controlLogs,
     initMedia, toggleVideo, toggleAudio, toggleScreenShare,
     toggleAlias, requestRemoteControl, respondToControlRequest, triggerEmergencyKill,
-  } = useWebRTC(inRoom ? roomName : '', userName, {
-    profilePic: profile.profilePic,
-    bio: profile.bio,
-  });
+  } = useWebRTC(
+    inRoom ? roomName : '', 
+    userName, 
+    {
+      profilePic: profile.profilePic,
+      bio: profile.bio,
+    },
+    selectedAudioInput,
+    selectedVideoInput
+  );
 
   const {
     volumeLevel, config: audioConfig, setConfig: setAudioConfig,
@@ -1627,6 +1642,25 @@ export default function App() {
   useEffect(() => {
     if (!socket || !userName) return;
     socket.emit('register_presence', { username: userName });
+
+    const handleOnlineUsersList = (usernames: string[]) => {
+      setOnlineUsers(new Set(usernames.map(u => u.toLowerCase())));
+    };
+
+    const handlePresenceUpdate = ({ username, online }: { username: string; online: boolean }) => {
+      setOnlineUsers(prev => {
+        const next = new Set(prev);
+        if (online) {
+          next.add(username.toLowerCase());
+        } else {
+          next.delete(username.toLowerCase());
+        }
+        return next;
+      });
+    };
+
+    socket.on('online_users_list', handleOnlineUsersList);
+    socket.on('presence_update', handlePresenceUpdate);
 
     const handleIncomingCall = (data: IncomingCallData & { callId?: number }) => {
       setIncomingCall({ ...data, callId: data.callId });
@@ -1900,6 +1934,8 @@ export default function App() {
       socket.off('file_offer', handleFileOffer);
       socket.off('file_answer', handleFileAnswer);
       socket.off('file_ice_candidate', handleFileIceCandidate);
+      socket.off('online_users_list', handleOnlineUsersList);
+      socket.off('presence_update', handlePresenceUpdate);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, userName, activeChatContact, lobbySubView, contacts, pendingFiles]);
@@ -1907,6 +1943,79 @@ export default function App() {
   /* ── Video refs ─────────────────────── */
   const localVideoRef  = useRef<HTMLVideoElement | null>(null);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  const enumerateDevices = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioIns = devices.filter(d => d.kind === 'audioinput');
+      const videoIns = devices.filter(d => d.kind === 'videoinput');
+      const audioOuts = devices.filter(d => d.kind === 'audiooutput');
+      
+      setAudioInputs(audioIns);
+      setVideoInputs(videoIns);
+      setAudioOutputs(audioOuts);
+      
+      if (audioIns.length > 0 && selectedAudioInput === 'default') {
+        const def = audioIns.find(d => d.deviceId === 'default') || audioIns[0];
+        setSelectedAudioInput(def.deviceId);
+      }
+      if (videoIns.length > 0 && selectedVideoInput === 'default') {
+        const def = videoIns.find(d => d.deviceId === 'default') || videoIns[0];
+        setSelectedVideoInput(def.deviceId);
+      }
+      if (audioOuts.length > 0 && selectedAudioOutput === 'default') {
+        const def = audioOuts.find(d => d.deviceId === 'default') || audioOuts[0];
+        setSelectedAudioOutput(def.deviceId);
+      }
+    } catch (err) {
+      console.error('Failed to enumerate media devices:', err);
+    }
+  }, [selectedAudioInput, selectedVideoInput, selectedAudioOutput]);
+
+  const applyAudioOutput = useCallback(async (deviceId: string) => {
+    if (typeof HTMLVideoElement.prototype.setSinkId === 'undefined') {
+      console.warn('Browser does not support setSinkId speaker output selection.');
+      return;
+    }
+    try {
+      if (localVideoRef.current) {
+        await (localVideoRef.current as any).setSinkId(deviceId);
+      }
+      if (screenVideoRef.current) {
+        await (screenVideoRef.current as any).setSinkId(deviceId);
+      }
+      const remoteAudios = document.querySelectorAll('audio, video');
+      for (let i = 0; i < remoteAudios.length; i++) {
+        const media = remoteAudios[i] as any;
+        if (media.setSinkId) {
+          await media.setSinkId(deviceId);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to set speaker output sinkId:', err);
+    }
+  }, []);
+
+  // Run on mount
+  useEffect(() => {
+    enumerateDevices();
+    if (typeof navigator.mediaDevices !== 'undefined') {
+      navigator.mediaDevices.ondevicechange = enumerateDevices;
+    }
+    return () => {
+      if (typeof navigator.mediaDevices !== 'undefined') {
+        navigator.mediaDevices.ondevicechange = null;
+      }
+    };
+  }, [enumerateDevices]);
+
+  // Apply audio output speaker change
+  useEffect(() => {
+    if (selectedAudioOutput && selectedAudioOutput !== 'default') {
+      applyAudioOutput(selectedAudioOutput);
+      sessionStorage.setItem('nexalink_selected_speaker', selectedAudioOutput);
+    }
+  }, [selectedAudioOutput, applyAudioOutput]);
 
   useEffect(() => {
     if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
@@ -1921,6 +2030,7 @@ export default function App() {
     const res = await initMedia(callType);
     if (res) {
       showToast('Camera & mic initialised successfully.', 'success');
+      await enumerateDevices();
     } else {
       showToast('Camera & mic inputs stopped & released.', 'info');
     }
@@ -2866,6 +2976,7 @@ export default function App() {
                         {audioEnabled ? 'Mic: Active' : 'Mic: Muted'}
                       </button>
                     </div>
+
                     {audioEnabled && (
                       <div className="text-3xs font-semibold flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/40 border border-white/5 mt-2 transition-all">
                         <span className="text-slate-400">Microphone Integrity Check:</span>
@@ -2876,6 +2987,77 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {/* Device Selector Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mt-2 bg-slate-900/40 p-4 rounded-2xl border border-white/5">
+                      <div className="flex flex-col gap-1.5 text-left">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                          <Mic className="w-3 h-3 text-indigo-400" /> Microphone
+                        </label>
+                        <select 
+                          value={selectedAudioInput}
+                          onChange={e => {
+                            setSelectedAudioInput(e.target.value);
+                            sessionStorage.setItem('nexalink_selected_mic', e.target.value);
+                          }}
+                          className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                        >
+                          {audioInputs.length === 0 ? (
+                            <option value="default">Default Microphone</option>
+                          ) : (
+                            audioInputs.map(d => (
+                              <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone (${d.deviceId.slice(0, 5)})`}</option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+
+                      {callType === 'video' && (
+                        <div className="flex flex-col gap-1.5 text-left">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <Video className="w-3 h-3 text-indigo-400" /> Camera
+                          </label>
+                          <select 
+                            value={selectedVideoInput}
+                            onChange={e => {
+                              setSelectedVideoInput(e.target.value);
+                              sessionStorage.setItem('nexalink_selected_cam', e.target.value);
+                            }}
+                            className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                          >
+                            {videoInputs.length === 0 ? (
+                              <option value="default">Default Camera</option>
+                            ) : (
+                              videoInputs.map(d => (
+                                <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera (${d.deviceId.slice(0, 5)})`}</option>
+                              ))
+                            )}
+                          </select>
+                        </div>
+                      )}
+
+                      <div className="flex flex-col gap-1.5 text-left">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                          <Headphones className="w-3 h-3 text-indigo-400" /> Audio Output
+                        </label>
+                        <select 
+                          value={selectedAudioOutput}
+                          onChange={e => {
+                            setSelectedAudioOutput(e.target.value);
+                            sessionStorage.setItem('nexalink_selected_speaker', e.target.value);
+                          }}
+                          className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                        >
+                          {audioOutputs.length === 0 ? (
+                            <option value="default">Default Speakers</option>
+                          ) : (
+                            audioOutputs.map(d => (
+                              <option key={d.deviceId} value={d.deviceId}>{d.label || `Speaker (${d.deviceId.slice(0, 5)})`}</option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Setup & Morphing Controls */}
@@ -3169,13 +3351,18 @@ export default function App() {
                                   key={contact.id} 
                                   className="relative flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/2 hover:bg-indigo-950/20 hover:border-indigo-500/20 transition-all duration-300 group"
                                 >
-                                  {contact.profilePic ? (
-                                    <img src={contact.profilePic} alt={contact.username} className="w-10 h-10 rounded-2xl object-cover" />
-                                  ) : (
-                                    <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: 'var(--nx-teal-soft)', color: 'var(--nx-primary-dark)' }}>
-                                      {contact.username.charAt(0).toUpperCase()}
-                                    </div>
-                                  )}
+                                  <div className="relative flex-shrink-0">
+                                    {contact.profilePic ? (
+                                      <img src={contact.profilePic} alt={contact.username} className="w-10 h-10 rounded-2xl object-cover" />
+                                    ) : (
+                                      <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: 'var(--nx-teal-soft)', color: 'var(--nx-primary-dark)' }}>
+                                        {contact.username.charAt(0).toUpperCase()}
+                                      </div>
+                                    )}
+                                    <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-950 shadow-sm ${
+                                      onlineUsers.has(contact.username.toLowerCase()) ? 'bg-emerald-500' : 'bg-slate-600'
+                                    }`} />
+                                  </div>
                                   
                                   {/* Unread indicator */}
                                   {unreadCount > 0 && (
@@ -3339,15 +3526,27 @@ export default function App() {
                         {/* Gorgeous WhatsApp-style Chat Header */}
                         <div className="flex items-center justify-between pb-3.5 border-b border-white/5 mb-4 mt-1">
                           <div className="flex items-center gap-3">
-                            {activeChatContact.profilePic ? (
-                              <img src={activeChatContact.profilePic} alt={activeChatContact.username} className="w-10 h-10 rounded-2xl object-cover border border-white/10 shadow-md" />
-                            ) : (
-                              <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-bold bg-white/5 border border-white/10 text-white shadow-md">
-                                {activeChatContact.username.charAt(0).toUpperCase()}
-                              </div>
-                            )}
+                            <div className="relative">
+                              {activeChatContact.profilePic ? (
+                                <img src={activeChatContact.profilePic} alt={activeChatContact.username} className="w-10 h-10 rounded-2xl object-cover border border-white/10 shadow-md" />
+                              ) : (
+                                <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-bold bg-white/5 border border-white/10 text-white shadow-md">
+                                  {activeChatContact.username.charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <div className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-slate-950 shadow-sm ${
+                                onlineUsers.has(activeChatContact.username.toLowerCase()) ? 'bg-emerald-500' : 'bg-slate-600'
+                              }`} />
+                            </div>
                             <div className="text-left">
-                              <h4 className="text-xs font-bold text-white leading-tight">@{activeChatContact.username}</h4>
+                              <h4 className="text-xs font-bold text-white leading-tight flex items-center gap-2">
+                                @{activeChatContact.username}
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-sans font-semibold tracking-wider uppercase ${
+                                  onlineUsers.has(activeChatContact.username.toLowerCase()) ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'
+                                }`}>
+                                  {onlineUsers.has(activeChatContact.username.toLowerCase()) ? 'online' : 'offline'}
+                                </span>
+                              </h4>
                               <p className="text-[10px] text-slate-500 font-mono mt-0.5">{activeChatContact.bio || 'Secure Contact'}</p>
                             </div>
                           </div>
@@ -4152,6 +4351,80 @@ export default function App() {
                             </div>
                           </label>
                         ))}
+                      </div>
+                    </div>
+
+                    {/* Hardware & Output Routing Selector */}
+                    <div>
+                      <p className="nx-section-header mb-3">Hardware & Output Routing</p>
+                      <div className="flex flex-col gap-3.5 p-3.5 rounded-2xl bg-slate-950/40 border border-white/5 space-y-1">
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <Mic className="w-3 h-3 text-indigo-400" /> Microphone
+                          </label>
+                          <select 
+                            value={selectedAudioInput}
+                            onChange={e => {
+                              setSelectedAudioInput(e.target.value);
+                              sessionStorage.setItem('nexalink_selected_mic', e.target.value);
+                            }}
+                            className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                          >
+                            {audioInputs.length === 0 ? (
+                              <option value="default">Default Microphone</option>
+                            ) : (
+                              audioInputs.map(d => (
+                                <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone (${d.deviceId.slice(0, 5)})`}</option>
+                              ))
+                            )}
+                          </select>
+                        </div>
+
+                        {callType === 'video' && (
+                          <div className="flex flex-col gap-1 text-left">
+                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                              <Video className="w-3 h-3 text-indigo-400" /> Camera
+                            </label>
+                            <select 
+                              value={selectedVideoInput}
+                              onChange={e => {
+                                setSelectedVideoInput(e.target.value);
+                                sessionStorage.setItem('nexalink_selected_cam', e.target.value);
+                              }}
+                              className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                            >
+                              {videoInputs.length === 0 ? (
+                                <option value="default">Default Camera</option>
+                              ) : (
+                                videoInputs.map(d => (
+                                  <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera (${d.deviceId.slice(0, 5)})`}</option>
+                                ))
+                              )}
+                            </select>
+                          </div>
+                        )}
+
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                            <Headphones className="w-3 h-3 text-indigo-400" /> Audio Output
+                          </label>
+                          <select 
+                            value={selectedAudioOutput}
+                            onChange={e => {
+                              setSelectedAudioOutput(e.target.value);
+                              sessionStorage.setItem('nexalink_selected_speaker', e.target.value);
+                            }}
+                            className="nx-input text-2xs py-1.5 bg-slate-950 border-white/10"
+                          >
+                            {audioOutputs.length === 0 ? (
+                              <option value="default">Default Speakers</option>
+                            ) : (
+                              audioOutputs.map(d => (
+                                <option key={d.deviceId} value={d.deviceId}>{d.label || `Speaker (${d.deviceId.slice(0, 5)})`}</option>
+                              ))
+                            )}
+                          </select>
+                        </div>
                       </div>
                     </div>
 

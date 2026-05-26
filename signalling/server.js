@@ -323,6 +323,10 @@ io.on('connection', (socket) => {
     registeredUsername = key;
     onlineUsers[key] = socket.id;
     console.log(`[Presence] ${key} online → ${socket.id}`);
+    // Broadcast real-time presence change to all clients
+    io.emit('presence_update', { username: key, online: true });
+    // Deliver currently connected online users list back to caller
+    socket.emit('online_users_list', Object.keys(onlineUsers));
   });
 
   // Join Event Handler
@@ -353,7 +357,7 @@ io.on('connection', (socket) => {
         id: socket.id,
         name: userAlias?.name || `Anonymous-${socket.id.substring(0, 4)}`,
         avatar: userAlias?.avatar || '👤',
-        profilePic: typeof userAlias?.profilePic === 'string' ? userAlias.profilePic.slice(0, 150000) : '',
+        profilePic: typeof userAlias?.profilePic === 'string' ? userAlias.profilePic.slice(0, 2000000) : '',
         bio: typeof userAlias?.bio === 'string' ? userAlias.bio.slice(0, 240) : '',
         isMuted: false,
         isVideoOff: false,
@@ -380,7 +384,7 @@ io.on('connection', (socket) => {
       const oldName = participant.name;
       participant.name = userAlias.name || participant.name;
       participant.avatar = userAlias.avatar || participant.avatar;
-      participant.profilePic = typeof userAlias.profilePic === 'string' ? userAlias.profilePic.slice(0, 150000) : participant.profilePic;
+      participant.profilePic = typeof userAlias.profilePic === 'string' ? userAlias.profilePic.slice(0, 2000000) : participant.profilePic;
       participant.bio = typeof userAlias.bio === 'string' ? userAlias.bio.slice(0, 240) : participant.bio;
       console.log(`[Signalling] Alias updated: <${oldName}> -> <${participant.name}> in Room: ${currentRoom}`);
       // Rebroadcast updated roster so all peers see the new alias instantly
@@ -727,6 +731,8 @@ io.on('connection', (socket) => {
     if (registeredUsername && onlineUsers[registeredUsername] === socket.id) {
       delete onlineUsers[registeredUsername];
       console.log(`[Presence] ${registeredUsername} went offline`);
+      // Broadcast presence change to all clients
+      io.emit('presence_update', { username: registeredUsername, online: false });
     }
     // BUG FIX #10: Use helper to clean participant list and prune empty rooms
     removeParticipant(currentRoom, socket.id);

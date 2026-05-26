@@ -33,7 +33,13 @@ type AliasProfile = {
   bio: string;
 };
 
-export function useWebRTC(roomName: string, defaultName: string, profile: UserPresenceProfile = {}) {
+export function useWebRTC(
+  roomName: string,
+  defaultName: string,
+  profile: UserPresenceProfile = {},
+  selectedAudioDeviceId?: string,
+  selectedVideoDeviceId?: string
+) {
   const [isConnected, setIsConnected] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
@@ -158,10 +164,11 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       return null;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: callType === 'video',
-        audio: true,
-      });
+      const constraints = {
+        video: callType === 'video' ? (selectedVideoDeviceId && selectedVideoDeviceId !== 'default' ? { deviceId: { exact: selectedVideoDeviceId } } : true) : false,
+        audio: selectedAudioDeviceId && selectedAudioDeviceId !== 'default' ? { deviceId: { exact: selectedAudioDeviceId } } : true,
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       setLocalStream(stream);
       syncMediaState(stream);
       return stream;
@@ -202,7 +209,9 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
     // It's perfectly safe to fetch a new video track and replace it.
     if (!track || track.readyState === 'ended') {
        try {
-           const newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+           const newStream = await navigator.mediaDevices.getUserMedia({
+             video: selectedVideoDeviceId && selectedVideoDeviceId !== 'default' ? { deviceId: { exact: selectedVideoDeviceId } } : true
+           });
            const newTrack = newStream.getVideoTracks()[0];
            stream.addTrack(newTrack);
 
@@ -462,6 +471,56 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
     setControlLogs(prev => [...prev, `[EMERGENCY] Revoked all active remote session privileges instantly`]);
   };
 
+  // Dynamic Camera Track Swapping
+  useEffect(() => {
+    if (!localStream) return;
+    const videoTrack = localStream.getVideoTracks()[0];
+    if (videoTrack && selectedVideoDeviceId && selectedVideoDeviceId !== 'default') {
+      const currentSettings = videoTrack.getSettings();
+      if (currentSettings.deviceId !== selectedVideoDeviceId) {
+        navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: selectedVideoDeviceId } }
+        }).then(newStream => {
+          const newTrack = newStream.getVideoTracks()[0];
+          localStream.removeTrack(videoTrack);
+          videoTrack.stop();
+          localStream.addTrack(newTrack);
+          Object.values(peerConnectionsRef.current).forEach(pc => {
+            const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+            if (sender) {
+              sender.replaceTrack(newTrack);
+            }
+          });
+        }).catch(err => console.error("Failed to dynamically switch video device:", err));
+      }
+    }
+  }, [selectedVideoDeviceId, localStream]);
+
+  // Dynamic Microphone Track Swapping
+  useEffect(() => {
+    if (!localStream) return;
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack && selectedAudioDeviceId && selectedAudioDeviceId !== 'default') {
+      const currentSettings = audioTrack.getSettings();
+      if (currentSettings.deviceId !== selectedAudioDeviceId) {
+        navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: selectedAudioDeviceId } }
+        }).then(newStream => {
+          const newTrack = newStream.getAudioTracks()[0];
+          localStream.removeTrack(audioTrack);
+          audioTrack.stop();
+          localStream.addTrack(newTrack);
+          Object.values(peerConnectionsRef.current).forEach(pc => {
+            const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+            if (sender) {
+              sender.replaceTrack(newTrack);
+            }
+          });
+        }).catch(err => console.error("Failed to dynamically switch audio device:", err));
+      }
+    }
+  }, [selectedAudioDeviceId, localStream]);
+
   // BUG FIX #1 (Core Fix): Remove `myAlias` from the dependency array entirely.
   // The socket connection must persist across alias changes — we use myAliasRef
   // to read the current alias at the moment of connection without needing it
@@ -558,7 +617,7 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       socketRef.current = null;
       setSocket(null);
     };
-  }, [startInputCapture, stopInputCapture, stopOverrideDetection, injectRemoteInput]);
+  }, [startInputCapture, stopInputCapture, stopOverrideDetection, injectRemoteInput, defaultName]);
 
   useEffect(() => {
     const socket = socketRef.current;
