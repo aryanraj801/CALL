@@ -247,6 +247,7 @@ export default function App() {
 
   /* Auth state */
   const [authToken, setAuthToken] = useState<string | null>(() => sessionStorage.getItem('nexalink_token'));
+  const [clockOffset, setClockOffset] = useState<number>(0);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSuccess, setAuthSuccess] = useState<string | null>(null);
   const [isRegisterMode, setIsRegisterMode] = useState(false);
@@ -639,12 +640,39 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
+        // Authoritative Server Clock & Offset Calculation
+        const clientTime = Date.now();
+        const serverDateHeader = res.headers.get('Date');
+        const serverTime = serverDateHeader ? new Date(serverDateHeader).getTime() : clientTime;
+        const offset = serverTime - clientTime;
+        setClockOffset(offset);
+
         const data = await res.json();
         if (data && data.length > 0) {
-          // Retrieve last disconnect time and record current reconnect time
-          const disconnectTime = getLastActiveTime() || new Date(Date.now() - 24 * 60 * 60 * 1000); // default to 24h ago
-          const reconnectTime = new Date();
+          // Retrieve last disconnect time and record current reconnect time authoritative to server time
+          const disconnectTime = getLastActiveTime() || new Date(serverTime - 24 * 60 * 60 * 1000); // default to 24h ago
+          const reconnectTime = new Date(serverTime);
           const notifiedIds = getNotifiedMsgIds();
+
+          // Filter retrieved unread messages strictly during the offline period that haven't been shown
+          const offlineMessagesToNotify = data.filter((msg: any) => {
+            const msgTime = new Date(msg.sent_at);
+            // strict boundary check to prevent live websocket duplication race conditions
+            return msgTime >= disconnectTime && msgTime < reconnectTime && !notifiedIds.includes(String(msg.id));
+          });
+
+          // In-App Notification Batching Rule (No native desktop OS popup for offline period retrieved messages)
+          if (offlineMessagesToNotify.length > 5) {
+            showToast(`You received ${offlineMessagesToNotify.length} new messages during your offline period.`, 'info');
+            offlineMessagesToNotify.forEach((msg: any) => {
+              addNotifiedMsgId(String(msg.id));
+            });
+          } else if (offlineMessagesToNotify.length > 0) {
+            offlineMessagesToNotify.forEach((msg: any) => {
+              showToast(`💬 ${msg.sender}: ${msg.text.slice(0, 45)}${msg.text.length > 45 ? '...' : ''}`, 'info');
+              addNotifiedMsgId(String(msg.id));
+            });
+          }
 
           setLobbyChats(prev => {
             const nextChats = { ...prev };
@@ -678,18 +706,6 @@ export default function App() {
                   time: chatMsg.time,
                   read: false
                 });
-
-                // ONLY show system notifications for retrieved messages within the offline period
-                // AND that haven't been shown before in the future
-                const msgTime = new Date(msg.sent_at);
-                if (msgTime >= disconnectTime && msgTime <= reconnectTime && !notifiedIds.includes(String(msg.id))) {
-                  notify('update', {
-                    sender: senderUser,
-                    body: `Offline update: ${msg.text}`,
-                    tag: `nexalink-lobby-offline-${msg.id}`,
-                  });
-                  addNotifiedMsgId(String(msg.id));
-                }
               }
             });
             
@@ -697,8 +713,6 @@ export default function App() {
             setInboxNotifications(newNotifications.slice(0, 50));
             return nextChats;
           });
-          
-          showToast(`Retrieved ${data.length} pending message${data.length > 1 ? 's' : ''}.`, 'info');
         }
       }
     } catch (err) {
@@ -1283,15 +1297,15 @@ export default function App() {
   /* Record Last Active Offline Tracker */
   useEffect(() => {
     if (!authToken) return;
-    // Set immediate active timestamp
-    setLastActiveTime(new Date().toISOString());
+    const updateTime = () => {
+      const authTime = new Date(Date.now() + clockOffset).toISOString();
+      setLastActiveTime(authTime);
+    };
     
-    // Set running background update interval every 5s
-    const interval = setInterval(() => {
-      setLastActiveTime(new Date().toISOString());
-    }, 5000);
+    updateTime();
+    const interval = setInterval(updateTime, 5000);
     return () => clearInterval(interval);
-  }, [authToken]);
+  }, [authToken, clockOffset]);
 
   /* Scroll chat to bottom */
   useEffect(() => {
