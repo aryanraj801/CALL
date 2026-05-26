@@ -70,15 +70,32 @@ loadPushSubscriptions();
  * Send a Web Push notification to a user who may be offline.
  * Returns { delivered: boolean, noSubscription: boolean } so callers can
  * distinguish between "push reached device" vs "device unreachable".
+ *
+ * Key insight: webpush.sendNotification() sends to the PUSH SERVICE (e.g. FCM),
+ * NOT directly to the user's device. A 201 from FCM means the message was
+ * accepted for delivery — it will be queued and delivered when the browser wakes.
+ *
+ * Error code meanings:
+ *   201       → accepted by push service (success)
+ *   404 / 410 → subscription expired / unsubscribed (clean up)
+ *   429       → rate limited by push service (message may still be queued)
+ *   5xx       → push service temporarily down (try again later)
+ *   401 / 403 → VAPID auth issue (log, but subscription may still be valid)
  */
 async function sendPush(targetUsername, payload) {
   const key = targetUsername?.toLowerCase();
   const subs = pushSubscriptions[key];
-  if (!subs) return { delivered: false, noSubscription: true };
+  if (!subs) {
+    console.log(`[WebPush] No subscription found for <${targetUsername}> — cannot deliver`);
+    return { delivered: false, noSubscription: true };
+  }
 
   // Handle backward compatibility (single subscription or array)
   const subArray = Array.isArray(subs) ? subs : [subs];
-  if (subArray.length === 0) return { delivered: false, noSubscription: true };
+  if (subArray.length === 0) {
+    console.log(`[WebPush] Empty subscription array for <${targetUsername}> — cannot deliver`);
+    return { delivered: false, noSubscription: true };
+  }
 
   console.log(`[WebPush] Sending push to ${subArray.length} active session endpoint(s) for <${targetUsername}>`);
 
@@ -86,16 +103,34 @@ async function sendPush(targetUsername, payload) {
 
   const promises = subArray.map(async (sub, idx) => {
     try {
-      await webpush.sendNotification(sub, JSON.stringify(payload));
-      console.log(`[WebPush] Push delivered to session endpoint #${idx + 1} for <${targetUsername}>`);
+      const result = await webpush.sendNotification(sub, JSON.stringify(payload));
+      console.log(`[WebPush] ✔ Push accepted by push service for <${targetUsername}> endpoint #${idx + 1} (status: ${result.statusCode})`);
       deliveredCount++;
       return { expired: false, delivered: true };
     } catch (err) {
-      if (err.statusCode === 410 || err.statusCode === 404) {
-        console.log(`[WebPush] Session endpoint #${idx + 1} for <${targetUsername}> expired (410/404)`);
+      const status = err.statusCode || 0;
+      const body = err.body || '';
+
+      if (status === 410 || status === 404) {
+        // Subscription is permanently gone — clean up
+        console.log(`[WebPush] ✖ Endpoint #${idx + 1} for <${targetUsername}> expired (${status}) — removing`);
         return { expired: true, delivered: false, endpoint: sub.endpoint };
+      } else if (status === 429) {
+        // Rate limited — push service received it but is throttling; treat as delivered
+        console.warn(`[WebPush] ⚠ Endpoint #${idx + 1} for <${targetUsername}> rate-limited (429) — message likely queued`);
+        deliveredCount++;
+        return { expired: false, delivered: true };
+      } else if (status >= 500) {
+        // Push service temporarily down — not the user's fault; treat as delivered (optimistic)
+        console.warn(`[WebPush] ⚠ Endpoint #${idx + 1} for <${targetUsername}> push service error (${status}) — may retry`);
+        deliveredCount++;
+        return { expired: false, delivered: true };
       } else {
-        console.error(`[WebPush] Failed at session endpoint #${idx + 1} for <${targetUsername}>:`, err.message, err.statusCode || '');
+        // 401, 403, network errors, etc — log full details for debugging
+        console.error(`[WebPush] ✖ Failed at endpoint #${idx + 1} for <${targetUsername}>:`,
+          `status=${status}`, `message=${err.message}`, `body=${body}`,
+          `endpoint=${sub.endpoint?.slice(0, 80)}...`
+        );
         return { expired: false, delivered: false };
       }
     }
@@ -114,9 +149,10 @@ async function sendPush(targetUsername, payload) {
       delete pushSubscriptions[key];
     }
     savePushSubscriptions();
-    console.log(`[WebPush] Cleaned up ${expiredEndpoints.length} expired session subscription(s) for <${targetUsername}>`);
+    console.log(`[WebPush] Cleaned up ${expiredEndpoints.length} expired subscription(s) for <${targetUsername}>`);
   }
 
+  console.log(`[WebPush] Result for <${targetUsername}>: ${deliveredCount}/${subArray.length} endpoint(s) accepted the push`);
   return { delivered: deliveredCount > 0, noSubscription: false };
 }
 
