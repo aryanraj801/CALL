@@ -416,10 +416,87 @@ export default function App() {
     }
   };
 
+  const loadPendingMessages = async () => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      const res = await fetch(`${API}/api/dm/unread`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.length > 0) {
+          setLobbyChats(prev => {
+            const nextChats = { ...prev };
+            const nextUnreadCounts = { ...unreadChatCounts };
+            const newNotifications = [...inboxNotifications];
+            
+            data.forEach((msg: any) => {
+              const senderUser = msg.sender;
+              const chatMsg: ChatMessage = {
+                id: String(msg.id),
+                sender: senderUser,
+                text: msg.text,
+                time: new Date(msg.sent_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
+                self: false
+              };
+              
+              const chatHistory = nextChats[senderUser] || [];
+              if (!chatHistory.some(m => m.id === chatMsg.id)) {
+                nextChats[senderUser] = [...chatHistory, chatMsg];
+                
+                if (!activeChatContact || activeChatContact.username.toLowerCase() !== senderUser.toLowerCase()) {
+                  nextUnreadCounts[senderUser] = (nextUnreadCounts[senderUser] || 0) + 1;
+                }
+                
+                newNotifications.unshift({
+                  id: `unread-${msg.id}`,
+                  type: 'chat',
+                  sender: senderUser,
+                  title: `Unread message from ${senderUser}`,
+                  desc: msg.text.slice(0, 60),
+                  time: chatMsg.time,
+                  read: false
+                });
+              }
+            });
+            
+            setUnreadChatCounts(nextUnreadCounts);
+            setInboxNotifications(newNotifications.slice(0, 50));
+            return nextChats;
+          });
+          
+          showToast(`Retrieved ${data.length} pending message${data.length > 1 ? 's' : ''}.`, 'info');
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load pending messages:", err);
+    }
+  };
+
+  const markMessagesAsRead = async (otherUser: string) => {
+    const token = sessionStorage.getItem('nexalink_token') || authToken;
+    if (!token) return;
+    try {
+      await fetch(`${API}/api/dm/read/${otherUser}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setUnreadChatCounts(prev => {
+        const nextCounts = { ...prev };
+        delete nextCounts[otherUser];
+        return nextCounts;
+      });
+    } catch (err) {
+      console.error("Failed to mark messages as read:", err);
+    }
+  };
+
   useEffect(() => {
     if (authToken) {
       loadContactsFromServer();
       loadCallHistoryFromServer();
+      loadPendingMessages();
     } else {
       setContacts([]);
       setCallHistory([]);
@@ -435,6 +512,7 @@ export default function App() {
   useEffect(() => {
     if (activeChatContact) {
       loadChatHistory(activeChatContact.username);
+      markMessagesAsRead(activeChatContact.username);
     }
   }, [activeChatContact]);
 

@@ -291,6 +291,13 @@ def get_direct_messages_db(user_a: str, user_b: str, limit: int = 100, offset: i
     return _http_request(url, "GET")
 
 
+def get_unread_messages_db(username: str):
+    """Retrieve all unread direct messages where the user is the recipient."""
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/direct_messages?recipient=eq.{safe_user}&read=eq.false&order=sent_at.asc"
+    return _http_request(url, "GET")
+
+
 # 15. Mark all messages in a conversation as read (for the recipient)
 def mark_messages_read_db(reader: str, other: str):
     safe_key  = urllib.parse.quote(_convo_key(reader, other), safe='')

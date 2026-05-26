@@ -42,6 +42,7 @@ from db.supabase_api import (
     get_contacts_db,
     remove_contact_db,
     get_all_direct_call_logs_db,
+    get_unread_messages_db,
 )
 
 # --- Configuration ---
@@ -511,6 +512,19 @@ def get_dm_history(
         return msgs
     except Exception as e:
         raise _safe_error(e, "Failed to retrieve messages.")
+
+
+@app.get("/api/dm/unread")
+def get_unread_messages(current_user: dict = Depends(get_current_user)):
+    """Retrieve all pending unread direct messages for the authenticated user."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        msgs = get_unread_messages_db(username)
+        return msgs
+    except Exception as e:
+        raise _safe_error(e, "Failed to retrieve unread messages.")
 
 
 @app.put("/api/dm/read/{other_user}")
