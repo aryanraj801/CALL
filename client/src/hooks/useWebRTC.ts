@@ -42,6 +42,8 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [myAlias, setMyAlias] = useState<AliasProfile>({ name: defaultName, avatar: '👤', profilePic: profile.profilePic || '', bio: profile.bio || '' });
   const [isAliasEnabled, setIsAliasEnabled] = useState(false);
+  const [socket, setSocket] = useState<Socket | null>(null);
+
 
   // Remote Control (Phase 4)
   const [controlledBy, setControlledBy] = useState<string | null>(null);
@@ -476,6 +478,7 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       },
     });
     socketRef.current = socket;
+    setSocket(socket);
 
     socket.on('connect', () => {
       setIsConnected(true);
@@ -552,6 +555,8 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
       stopOverrideDetection();
       Object.values(peerConnectionsRef.current).forEach(pc => pc.close());
       peerConnectionsRef.current = {};
+      socketRef.current = null;
+      setSocket(null);
     };
   }, [startInputCapture, stopInputCapture, stopOverrideDetection, injectRemoteInput]);
 
@@ -567,10 +572,9 @@ export function useWebRTC(roomName: string, defaultName: string, profile: UserPr
     }
   }, [roomName, screenStream]);
 
-  // BUG FIX #2: Expose socketRef.current directly instead of a duplicate useState.
-  // Consumers get a stable reference through the ref rather than a stale state copy.
+  // BUG FIX #2: Expose the reactive socket state so consumers are notified when the connection is established.
   return {
-    socket: socketRef.current,
+    socket,
     isConnected,
     localStream,
     screenStream,
