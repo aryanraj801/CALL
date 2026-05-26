@@ -389,55 +389,41 @@ def get_call_history(room_name: Optional[str] = None, current_user: dict = Depen
         raise _safe_error(e, "Failed to retrieve call history.")
 
 
-# REST Endpoint: Save Selective Consent
+# REST Endpoint: Save Selective Consent (DEACTIVATED)
 @app.post("/api/recordings/consent")
 def submit_recording_consent(consent: RecordingConsentSchema, current_user: dict = Depends(get_current_user)):
-    try:
-        res = submit_recording_consent_db(consent.room_name, consent.participant_id, consent.consent_granted)
-        return {"status": "RECORDED", "consent_id": res.get("id")}
-    except Exception as e:
-        raise _safe_error(e, "Failed to record consent.")
+    raise HTTPException(
+        status_code=410, 
+        detail="Recording and consent tracking features have been permanently deactivated."
+    )
 
 
-# REST Endpoint: High-Performance pgvector Semantic Search
+# REST Endpoint: High-Performance pgvector Semantic Search (DEACTIVATED)
 # ROUTE ORDER FIX (SEC-15): Must be BEFORE /{room_name} route
 @app.post("/api/ai/summaries/search")
 def search_summaries(query_data: SemanticSearchQuery, current_user: dict = Depends(get_current_user)):
-    try:
-        results = search_meeting_summaries_db(
-            query_embedding=query_data.query_embedding,
-            match_threshold=query_data.match_threshold,
-            match_count=query_data.match_count
-        )
-        return results
-    except Exception as e:
-        raise _safe_error(e, "Semantic search failed.")
+    raise HTTPException(
+        status_code=410, 
+        detail="Meeting transcription and search features have been permanently deactivated."
+    )
 
 
-# REST Endpoint: Save Meeting Summaries and Action Items
+# REST Endpoint: Save Meeting Summaries and Action Items (DEACTIVATED)
 @app.post("/api/ai/summaries")
 def save_meeting_summary(summary_data: MeetingSummaryCreate, current_user: dict = Depends(get_current_user)):
-    try:
-        res = save_meeting_summary_db(
-            room_name=summary_data.room_name,
-            transcript=summary_data.transcript,
-            summary=summary_data.summary,
-            action_items=summary_data.action_items,
-            embedding=summary_data.transcript_embedding
-        )
-        return {"status": "SUCCESS", "summary_id": res.get("id")}
-    except Exception as e:
-        raise _safe_error(e, "Failed to save meeting summary.")
+    raise HTTPException(
+        status_code=410, 
+        detail="Meeting summarization and recording features have been permanently deactivated."
+    )
 
 
-# REST Endpoint: Retrieve Meeting Summaries History
+# REST Endpoint: Retrieve Meeting Summaries History (DEACTIVATED)
 @app.get("/api/ai/summaries/{room_name}")
 def get_room_summaries(room_name: str, current_user: dict = Depends(get_current_user)):
-    try:
-        summaries = get_room_summaries_db(room_name)
-        return summaries
-    except Exception as e:
-        raise _safe_error(e, "Failed to retrieve summaries.")
+    raise HTTPException(
+        status_code=410, 
+        detail="Meeting summarization and recording features have been permanently deactivated."
+    )
 
 
 # REST Endpoint: Save Whiteboard Cloud Snapshot reference

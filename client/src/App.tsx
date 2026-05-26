@@ -9,7 +9,7 @@ import {
   LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Paperclip,
   Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard
 } from 'lucide-react';
-import { useWebRTC } from './hooks/useWebRTC.ts';
+import { useWebRTC, Participant } from './hooks/useWebRTC.ts';
 import { useAudioPipeline } from './hooks/useAudioPipeline.ts';
 import { useNotifications } from './hooks/useNotifications.ts';
 import Whiteboard from './components/Whiteboard.tsx';
@@ -68,6 +68,13 @@ interface OutgoingCall {
 const nowTime = () => new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+const isValidProfilePic = (url?: string): boolean => {
+  if (!url) return false;
+  const clean = url.trim();
+  if (clean === '' || clean === 'null' || clean === 'undefined') return false;
+  return clean.startsWith('data:image/') || clean.startsWith('http://') || clean.startsWith('https://');
+};
+
 /* ─────────────────────────────────────────
    Toast
 ───────────────────────────────────────── */
@@ -103,11 +110,109 @@ function Toast({ msg, type, onDone }: { msg: string; type: 'success' | 'error' |
 /* ─────────────────────────────────────────
    Hash Routing Initializer
    ───────────────────────────────────────── */
+/* ─────────────────────────────────────────
+   Persistent Cookie Helpers
+   ───────────────────────────────────────── */
+const setRememberCookie = (username: string, token: string) => {
+  const data = JSON.stringify({ username, token });
+  const d = new Date();
+  d.setTime(d.getTime() + (365 * 24 * 60 * 60 * 1000)); // 365 days
+  const expires = "expires=" + d.toUTCString();
+  document.cookie = `nexalink_remember=${encodeURIComponent(data)};${expires};path=/;SameSite=Strict`;
+};
+
+const getRememberCookie = (): { username: string; token: string } | null => {
+  if (typeof document === 'undefined') return null;
+  const name = "nexalink_remember=";
+  const decodedCookie = decodeURIComponent(document.cookie);
+  const ca = decodedCookie.split(';');
+  for(let i = 0; i < ca.length; i++) {
+    let c = ca[i];
+    while (c.charAt(0) === ' ') {
+      c = c.substring(1);
+    }
+    if (c.indexOf(name) === 0) {
+      try {
+        const rawData = c.substring(name.length, c.length);
+        return JSON.parse(rawData);
+      } catch (e) {
+        return null;
+      }
+    }
+  }
+  return null;
+};
+
+const deleteRememberCookie = () => {
+  document.cookie = "nexalink_remember=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;SameSite=Strict";
+};
+
+const getLastActiveTime = (): Date | null => {
+  if (typeof document === 'undefined') return null;
+  const name = "nexalink_last_active=";
+  const decodedCookie = decodeURIComponent(document.cookie);
+  const ca = decodedCookie.split(';');
+  for(let i = 0; i < ca.length; i++) {
+    let c = ca[i];
+    while (c.charAt(0) === ' ') {
+      c = c.substring(1);
+    }
+    if (c.indexOf(name) === 0) {
+      const val = c.substring(name.length, c.length);
+      return val ? new Date(val) : null;
+    }
+  }
+  return null;
+};
+
+const setLastActiveTime = (time: string) => {
+  document.cookie = `nexalink_last_active=${encodeURIComponent(time)};path=/;SameSite=Strict;max-age=31536000`;
+};
+
+const getNotifiedMsgIds = (): string[] => {
+  if (typeof document === 'undefined') return [];
+  const name = "nexalink_notified_msg_ids=";
+  const decodedCookie = decodeURIComponent(document.cookie);
+  const ca = decodedCookie.split(';');
+  for(let i = 0; i < ca.length; i++) {
+    let c = ca[i];
+    while (c.charAt(0) === ' ') {
+      c = c.substring(1);
+    }
+    if (c.indexOf(name) === 0) {
+      try {
+        const val = c.substring(name.length, c.length);
+        return JSON.parse(val);
+      } catch (e) {
+        return [];
+      }
+    }
+  }
+  return [];
+};
+
+const addNotifiedMsgId = (id: string) => {
+  const current = getNotifiedMsgIds();
+  if (current.includes(id)) return;
+  const updated = [...current, id].slice(-100); // keep last 100 to avoid huge cookies
+  const data = JSON.stringify(updated);
+  document.cookie = `nexalink_notified_msg_ids=${encodeURIComponent(data)};path=/;SameSite=Strict;max-age=31536000`;
+};
+
 const getInitialNavigation = (): { view: 'landing' | 'lobby' | 'connecting' | 'room'; subview: 'connect' | 'chat_lobby' } => {
   const hash = typeof window !== 'undefined' ? window.location.hash : '';
-  const token = typeof window !== 'undefined' ? sessionStorage.getItem('nexalink_token') : null;
+  let token = typeof window !== 'undefined' ? sessionStorage.getItem('nexalink_token') : null;
   const savedView = typeof window !== 'undefined' ? sessionStorage.getItem('nexalink_current_view') : null;
   const savedSubView = typeof window !== 'undefined' ? sessionStorage.getItem('nexalink_lobby_subview') : null;
+
+  if (!token && typeof window !== 'undefined') {
+    const remember = getRememberCookie();
+    if (remember && remember.username && remember.token) {
+      sessionStorage.setItem('nexalink_token', remember.token);
+      sessionStorage.setItem('nexalink_username', remember.username);
+      token = remember.token;
+    }
+  }
 
   if (!token) {
     return { view: 'landing', subview: 'connect' };
@@ -536,6 +641,11 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data && data.length > 0) {
+          // Retrieve last disconnect time and record current reconnect time
+          const disconnectTime = getLastActiveTime() || new Date(Date.now() - 24 * 60 * 60 * 1000); // default to 24h ago
+          const reconnectTime = new Date();
+          const notifiedIds = getNotifiedMsgIds();
+
           setLobbyChats(prev => {
             const nextChats = { ...prev };
             const nextUnreadCounts = { ...unreadChatCounts };
@@ -568,6 +678,18 @@ export default function App() {
                   time: chatMsg.time,
                   read: false
                 });
+
+                // ONLY show system notifications for retrieved messages within the offline period
+                // AND that haven't been shown before in the future
+                const msgTime = new Date(msg.sent_at);
+                if (msgTime >= disconnectTime && msgTime <= reconnectTime && !notifiedIds.includes(String(msg.id))) {
+                  notify('update', {
+                    sender: senderUser,
+                    body: `Offline update: ${msg.text}`,
+                    tag: `nexalink-lobby-offline-${msg.id}`,
+                  });
+                  addNotifiedMsgId(String(msg.id));
+                }
               }
             });
             
@@ -1136,7 +1258,7 @@ export default function App() {
 
   /* Dynamic Page Scroll Control */
   useEffect(() => {
-    if (!authToken) {
+    if (!authToken && currentView !== 'landing') {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'auto';
@@ -1144,7 +1266,7 @@ export default function App() {
     return () => {
       document.body.style.overflow = '';
     };
-  }, [authToken]);
+  }, [authToken, currentView]);
 
   useEffect(() => {
     sessionStorage.setItem('nexalink_contacts', JSON.stringify(contacts));
@@ -1157,6 +1279,19 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem('nexalink_lobby_subview', lobbySubView);
   }, [lobbySubView]);
+
+  /* Record Last Active Offline Tracker */
+  useEffect(() => {
+    if (!authToken) return;
+    // Set immediate active timestamp
+    setLastActiveTime(new Date().toISOString());
+    
+    // Set running background update interval every 5s
+    const interval = setInterval(() => {
+      setLastActiveTime(new Date().toISOString());
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [authToken]);
 
   /* Scroll chat to bottom */
   useEffect(() => {
@@ -1475,6 +1610,7 @@ export default function App() {
       }
       sessionStorage.setItem('nexalink_token', data.access_token);
       sessionStorage.setItem('nexalink_username', data.username);
+      setRememberCookie(data.username, data.access_token);
       setAuthToken(data.access_token);
       setUserName(data.username);
       setProfile(prev => ({ ...prev, username: data.username }));
@@ -1498,6 +1634,7 @@ export default function App() {
     sessionStorage.removeItem('nexalink_lobby_subview');
     sessionStorage.removeItem('nexalink_contacts');
     sessionStorage.removeItem('nexalink_notifications');
+    deleteRememberCookie();
     unsubscribeNotif(userName);   // remove push subscription from server
     setAuthToken(null);
     setUserName('Alice');
@@ -1760,6 +1897,7 @@ export default function App() {
           body: `New message: ${text}`,
           tag: `nexalink-lobby-${senderUsername}`,
         });
+        addNotifiedMsgId(msg.id);
       }
     };
 
@@ -2124,6 +2262,18 @@ export default function App() {
   const orderedParticipants = pinnedTile && pinnedTile !== 'self'
     ? [...visibleParticipants].sort((a, b) => (a.id === pinnedTile ? -1 : b.id === pinnedTile ? 1 : 0))
     : visibleParticipants;
+
+  const getPeerProfilePic = (peer: Participant) => {
+    if (isValidProfilePic(peer.profilePic)) {
+      return peer.profilePic;
+    }
+    const match = contacts.find(c => c.username.toLowerCase() === peer.name.toLowerCase());
+    if (match && isValidProfilePic(match.profilePic)) {
+      return match.profilePic;
+    }
+    return '';
+  };
+
   const hasPinnedTile = Boolean(pinnedTile && !locallyHiddenPeers.includes(pinnedTile));
   const videoFitClass = fitMode === 'cover' ? 'object-cover' : 'object-contain bg-slate-950';
 
@@ -2143,7 +2293,7 @@ export default function App() {
           <div className="flex flex-col items-center gap-3 text-center mt-2">
             <label className="w-24 h-24 rounded-full flex items-center justify-center cursor-pointer overflow-hidden transition-all hover:scale-105"
               style={{ background: 'var(--nx-teal-soft)', border: '2px solid var(--nx-primary)' }}>
-              {profile.profilePic ? (
+              {isValidProfilePic(profile.profilePic) ? (
                 <img src={profile.profilePic} alt="Profile" className="w-full h-full object-cover" />
               ) : (
                 <ImagePlus className="w-7 h-7 text-[var(--nx-primary)]" />
@@ -2301,7 +2451,7 @@ export default function App() {
      RENDER
   ═══════════════════════════════════════ */
   return (
-    <div className={`min-h-screen flex flex-col nx-app-shell ${!authToken ? 'overflow-hidden' : 'overflow-y-auto'}`} style={{ fontFamily: 'var(--font-sans)' }}>
+    <div className={`min-h-screen flex flex-col nx-app-shell ${(!authToken && currentView !== 'landing') ? 'overflow-hidden' : 'overflow-y-auto'}`} style={{ fontFamily: 'var(--font-sans)' }}>
 
       {/* Toast */}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
@@ -2536,6 +2686,7 @@ export default function App() {
       </div>
 
       {/* ── HEADER ─────────────────────── */}
+      {currentView !== 'landing' && (
       <header className="relative z-50 glass app-header flex items-center justify-between px-6 py-3 border-b">
 
         {/* Logo */}
@@ -2690,11 +2841,12 @@ export default function App() {
           )}
         </div>
       </header>
+      )}
 
       {/* ── MAIN ─────────────────────── */}
       <main className="flex-1 relative z-10 flex app-main" style={{ height: inRoom ? 'calc(100vh - 154px)' : 'calc(100vh - 88px)' }}>
 
-        {!authToken ? (
+        {!authToken && currentView !== 'landing' ? (
           /* ════════════════════════════
              AUTHENTICATION GATEWAY
              ════════════════════════════ */
@@ -2817,64 +2969,201 @@ export default function App() {
                PREMIUM LANDING PAGE
                ════════════════════════════ */
             <div className="w-full landing-container">
-              <div className="landing-hero">
-                <div className="nx-badge nx-badge-indigo mb-2">Introducing NexaLink v1.0</div>
-                <h1 className="landing-title">Secure Real-Time Talking & Instant Connection Room</h1>
-                <p className="landing-subtitle">
-                  A premium secure platform designed for talking and instant connection — not just another corporate meeting. NexaLink blends military-grade AES-GCM-256 chat privacy, microsecond WebRTC audio DSP voice morphing, and chaperoned remote operations into a smooth, seamless personal connection experience.
-                </p>
-                <div className="landing-cta-group">
-                  <button onClick={() => { setCurrentView('lobby'); setLobbySubView('connect'); }} className="nx-btn nx-btn-primary flex items-center gap-2" style={{ padding: '14px 28px', fontSize: '14px' }}>
-                    <Zap className="w-4 h-4" /> Start Connecting
-                  </button>
-                  <a href="#features" onClick={(e) => { e.preventDefault(); document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' }); }} className="nx-btn nx-btn-ghost flex items-center gap-2" style={{ padding: '14px 28px' }}>
-                    Explore Capabilities
+              {/* Premium Floating Header */}
+              <header className="landing-nav animate-in fade-in slide-in-from-top-4 duration-500">
+                <div className="landing-logo">
+                  <ShieldCheck className="w-6 h-6 text-[var(--nx-primary)] animate-pulse" />
+                  <span className="font-display font-extrabold text-xl tracking-tight text-[var(--nx-ink)]">NexaLink</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[var(--nx-primary)]/10 text-[var(--nx-primary)] font-bold">SECURE v1.0</span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <a href="#features" onClick={(e) => { e.preventDefault(); document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' }); }} className="text-xs font-bold text-[var(--nx-muted)] hover:text-[var(--nx-primary)] transition">
+                    Capabilities
                   </a>
+                  <a href="#architecture" onClick={(e) => { e.preventDefault(); document.getElementById('architecture')?.scrollIntoView({ behavior: 'smooth' }); }} className="text-xs font-bold text-[var(--nx-muted)] hover:text-[var(--nx-primary)] transition">
+                    Architecture
+                  </a>
+                  <button 
+                    onClick={() => { setCurrentView('lobby'); setLobbySubView('connect'); }} 
+                    className="nx-btn nx-btn-primary flex items-center gap-1.5"
+                    style={{ padding: '8px 18px', fontSize: '12px' }}
+                  >
+                    <Zap className="w-3.5 h-3.5" /> Start Connecting
+                  </button>
                 </div>
-              </div>
+              </header>
 
-              {/* Highlights grid */}
-              <div id="features" className="landing-features-grid">
-                <div className="landing-feature-card">
-                  <div className="landing-feature-icon">
-                    <Lock className="w-5 h-5" />
+              {/* Hero Section - Premium Two Column */}
+              <section className="landing-hero-section">
+                <div className="landing-hero-left">
+                  <div className="landing-badge-premium animate-in fade-in duration-500">
+                    <Zap className="w-3 h-3 text-[var(--nx-primary)]" />
+                    <span>INTRODUCING THE SECURE ZONE</span>
                   </div>
-                  <h3 className="landing-feature-title">AES-GCM-256 Privacy</h3>
-                  <p className="landing-feature-desc">
-                    Your video streams, collaborative vector blackboard sketches, and chat history are fully encrypted on the client side for absolute confidentiality.
+                  <h1 className="landing-title animate-in fade-in duration-700">
+                    Secure Real-Time Talking & <span className="title-gradient">Instant Connection</span> Hub
+                  </h1>
+                  <p className="landing-subtitle animate-in fade-in duration-1000">
+                    A premium secure communications platform designed for real-time collaboration — not just another corporate meeting app. NexaLink blends military-grade privacy, real-time voice DSP morphing, vector whiteboard canvas, and sandboxed remote operations into a beautiful, high-fidelity experience.
+                  </p>
+                  <div className="landing-cta-group animate-in fade-in duration-1000">
+                    <button 
+                      onClick={() => { setCurrentView('lobby'); setLobbySubView('connect'); }} 
+                      className="nx-btn nx-btn-primary flex items-center gap-2 shadow-lg shadow-[var(--nx-primary)]/25 hover:shadow-[var(--nx-primary)]/40 hover:scale-105 active:scale-95 transition-all duration-300" 
+                      style={{ padding: '16px 32px', fontSize: '15px', borderRadius: '16px' }}
+                    >
+                      <Zap className="w-4 h-4 animate-bounce" /> Start Connecting
+                    </button>
+                    <a 
+                      href="#features" 
+                      onClick={(e) => { e.preventDefault(); document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' }); }} 
+                      className="nx-btn nx-btn-ghost flex items-center gap-2 border border-[var(--nx-line-strong)] hover:bg-[var(--nx-primary)]/5 hover:border-[var(--nx-primary)]/30 hover:scale-105 active:scale-95 transition-all duration-300" 
+                      style={{ padding: '16px 32px', borderRadius: '16px' }}
+                    >
+                      Explore Capabilities
+                    </a>
+                  </div>
+                </div>
+
+                <div className="landing-hero-right animate-in fade-in zoom-in-95 duration-1000">
+                  <div className="preview-glow-backdrop"></div>
+                  <div className="preview-frame-wrapper">
+                    <img 
+                      src="/nexalink_dashboard_preview.png" 
+                      alt="NexaLink Premium Interface Dashboard" 
+                      className="preview-dashboard-img" 
+                    />
+                    <div className="preview-frame-overlay">
+                      <div className="overlay-indicator">
+                        <span className="dot animate-ping"></span>
+                        <span className="text">LIVE SECURE PROTOCOL ACTIVE</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Capabilities Highlights Grid */}
+              <section id="features" className="landing-section-wrapper">
+                <div className="section-header text-center max-w-xl mx-auto">
+                  <h2 className="section-title">Engineered for Absolute Privacy & Real-Time Sync</h2>
+                  <p className="section-desc">
+                    Experience a secure sandbox designed for collaborative editing, secure peer-to-peer audio links, and sub-millisecond encryption.
                   </p>
                 </div>
 
-                <div className="landing-feature-card">
-                  <div className="landing-feature-icon">
-                    <Sliders className="w-5 h-5" />
+                <div className="landing-features-grid">
+                  <div className="landing-feature-card">
+                    <div className="landing-feature-icon">
+                      <Lock className="w-5 h-5" />
+                    </div>
+                    <h3 className="landing-feature-title">Military-Grade Encryption</h3>
+                    <p className="landing-feature-desc">
+                      Your media streams, collaborative vector blackboard drawings, and chat channels are secured via client-side AES-GCM-256 for absolute privacy.
+                    </p>
                   </div>
-                  <h3 className="landing-feature-title">DSP Voice Morphing</h3>
-                  <p className="landing-feature-desc">
-                    Alter your voice frequencies in real-time with sub-millisecond pitch shifting, sub-ambient whisper boosters, and voice cloning models.
+
+                  <div className="landing-feature-card">
+                    <div className="landing-feature-icon">
+                      <Sliders className="w-5 h-5" />
+                    </div>
+                    <h3 className="landing-feature-title">Real-Time DSP Morphing</h3>
+                    <p className="landing-feature-desc">
+                      Adjust your voice parameters live using custom pitch-shifters, sub-ambient noise gates, frequency equalizers, and voice cloning models.
+                    </p>
+                  </div>
+
+                  <div className="landing-feature-card">
+                    <div className="landing-feature-icon">
+                      <Zap className="w-5 h-5" />
+                    </div>
+                    <h3 className="landing-feature-title">Chaperoned Tunneling</h3>
+                    <p className="landing-feature-desc">
+                      Safely initiate, grant, and run collaborative remote control operations inside a secure browser sandboxed viewport with emergency panic locks.
+                    </p>
+                  </div>
+
+                  <div className="landing-feature-card">
+                    <div className="landing-feature-icon">
+                      <Edit2 className="w-5 h-5" />
+                    </div>
+                    <h3 className="landing-feature-title">Interactive Shared Board</h3>
+                    <p className="landing-feature-desc">
+                      Co-sketch code architectures, design mockups, and draw vector overlays on a high-speed blackboard canvas synced seamlessly via Yjs.
+                    </p>
+                  </div>
+                </div>
+              </section>
+
+              {/* Architecture - How it works */}
+              <section id="architecture" className="landing-section-wrapper architecture-section">
+                <div className="section-header text-center max-w-xl mx-auto">
+                  <h2 className="section-title">Under The Hood</h2>
+                  <p className="section-desc">
+                    NexaLink integrates high-performance P2P structures with persistent cloud channels to keep you connected, secure, and notified.
                   </p>
                 </div>
 
-                <div className="landing-feature-card">
-                  <div className="landing-feature-icon">
-                    <Zap className="w-5 h-5" />
+                <div className="architecture-grid">
+                  <div className="architecture-step-card">
+                    <div className="step-num">01</div>
+                    <h4 className="step-title">Supabase Identity Gateway</h4>
+                    <p className="step-desc">
+                      Rigorous authentication and RLS database schemas secure your user profiles. Secure HTTP-only cookies retain your session safely across browser relaunches.
+                    </p>
                   </div>
-                  <h3 className="landing-feature-title">Chaperoned Controls</h3>
-                  <p className="landing-feature-desc">
-                    Securely request, grant, and run remote interactions with strict active sandboxing, consent logging, and immediate panic kill-switches.
-                  </p>
-                </div>
 
-                <div className="landing-feature-card">
-                  <div className="landing-feature-icon">
-                    <Edit2 className="w-5 h-5" />
+                  <div className="architecture-step-card">
+                    <div className="step-num">02</div>
+                    <h4 className="step-title">WebRTC Secure Signalling</h4>
+                    <p className="step-desc">
+                      Socket.IO servers broker instantaneous RTC handshakes, enabling a direct, peer-to-peer connection for audio, video, and Yjs whiteboards without cloud storage hops.
+                    </p>
                   </div>
-                  <h3 className="landing-feature-title">Shared Whiteboard</h3>
-                  <p className="landing-feature-desc">
-                    Co-create equations, vector layouts, and brainstorm ideas in real-time on a robust blackboard canvas synchronized with Yjs.
-                  </p>
+
+                  <div className="architecture-step-card">
+                    <div className="step-num">03</div>
+                    <h4 className="step-title">Asynchronous Web Push</h4>
+                    <p className="step-desc">
+                      When a contact goes offline, the push-waking service monitors state changes in Supabase and triggers native Web Push notifications so they never miss an incoming call.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              </section>
+
+              {/* Bottom Glowing CTA */}
+              <section className="landing-bottom-cta">
+                <div className="cta-backdrop-glow"></div>
+                <div className="relative z-10 flex flex-col items-center gap-6">
+                  <h2 className="text-3xl font-display font-extrabold text-[var(--nx-ink)] max-w-md text-center leading-tight">
+                    Establish Your Secure Connection Gateway
+                  </h2>
+                  <p className="text-xs text-[var(--nx-muted)] text-center max-w-sm leading-relaxed">
+                    Log in once. Stay synced securely. Receive calls even when closed. Elevate your engineering discussions to absolute comfort.
+                  </p>
+                  <button 
+                    onClick={() => { setCurrentView('lobby'); setLobbySubView('connect'); }} 
+                    className="nx-btn nx-btn-primary flex items-center gap-2 hover:scale-105 active:scale-95 transition-all shadow-xl shadow-[var(--nx-primary)]/20"
+                    style={{ padding: '16px 36px', fontSize: '14px', borderRadius: '14px' }}
+                  >
+                    <Zap className="w-4 h-4 animate-pulse" /> Enter Connection Lobby
+                  </button>
+                </div>
+              </section>
+
+              {/* Footer */}
+              <footer className="landing-footer">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 w-full">
+                  <span className="text-3xs text-[var(--nx-muted)] font-mono">
+                    © 2026 NexaLink Inc. All cryptographic rights reserved.
+                  </span>
+                  <div className="flex items-center gap-4 text-3xs font-bold text-[var(--nx-muted)]">
+                    <span>E2EE Active</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                    <span>All services nominal</span>
+                  </div>
+                </div>
+              </footer>
             </div>
           ) : currentView === 'connecting' ? (
             /* ════════════════════════════
@@ -3362,7 +3651,7 @@ export default function App() {
                                   className="relative flex items-center gap-3 p-3 rounded-2xl border border-white/5 bg-white/2 hover:bg-indigo-950/20 hover:border-indigo-500/20 transition-all duration-300 group"
                                 >
                                   <div className="relative flex-shrink-0">
-                                    {contact.profilePic ? (
+                                    {isValidProfilePic(contact.profilePic) ? (
                                       <img src={contact.profilePic} alt={contact.username} className="w-10 h-10 rounded-2xl object-cover" />
                                     ) : (
                                       <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-bold" style={{ background: 'var(--nx-teal-soft)', color: 'var(--nx-primary-dark)' }}>
@@ -3505,7 +3794,7 @@ export default function App() {
                               className={`flex items-center gap-2.5 p-2.5 rounded-xl cursor-pointer transition ${isActive ? 'bg-[var(--nx-teal-soft)] border border-[var(--nx-primary)]/30' : 'border border-transparent hover:bg-white/2'}`}
                             >
                               <div className="relative">
-                                {c.profilePic ? (
+                                {isValidProfilePic(c.profilePic) ? (
                                   <img src={c.profilePic} alt={c.username} className="w-8 h-8 rounded-xl object-cover" />
                                 ) : (
                                   <div className="w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold bg-white/5">
@@ -3537,7 +3826,7 @@ export default function App() {
                         <div className="flex items-center justify-between pb-3.5 border-b border-white/5 mb-4 mt-1">
                           <div className="flex items-center gap-3">
                             <div className="relative">
-                              {activeChatContact.profilePic ? (
+                              {isValidProfilePic(activeChatContact.profilePic) ? (
                                 <img src={activeChatContact.profilePic} alt={activeChatContact.username} className="w-10 h-10 rounded-2xl object-cover border border-white/10 shadow-md" />
                               ) : (
                                 <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-bold bg-white/5 border border-white/10 text-white shadow-md">
@@ -3896,7 +4185,7 @@ export default function App() {
                   {!videoEnabled && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
                       style={{ background: 'radial-gradient(circle at 50% 20%, rgba(99,102,241,0.18), rgba(6,10,24,0.96) 58%)' }}>
-                      {profile.profilePic ? (
+                      {isValidProfilePic(profile.profilePic) ? (
                         <img src={profile.profilePic} alt={userName}
                           className="w-24 h-24 rounded-full object-cover border-2 border-indigo-500/40 shadow-xl" />
                       ) : (
@@ -4013,8 +4302,8 @@ export default function App() {
                         </div>
                       ) : null}
                       
-                      {peer.profilePic ? (
-                        <img src={peer.profilePic} alt={peer.name}
+                      {isValidProfilePic(getPeerProfilePic(peer)) ? (
+                        <img src={getPeerProfilePic(peer)} alt={peer.name}
                           className="w-20 h-20 rounded-full object-cover border-2 border-[var(--nx-primary)]/20 shadow-xl" />
                       ) : (
                         <div className="participant-avatar">{peer.avatar}</div>
@@ -4582,7 +4871,7 @@ export default function App() {
                         contacts.map(contact => (
                           <div key={contact.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
                             style={{ border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.025)' }}>
-                            {contact.profilePic ? (
+                            {isValidProfilePic(contact.profilePic) ? (
                               <img src={contact.profilePic} alt={contact.username}
                                 className="w-9 h-9 rounded-xl object-cover" />
                             ) : (
@@ -4648,39 +4937,6 @@ export default function App() {
                         <ShieldAlert className="w-4 h-4" /> Emergency Kill-Switch
                       </button>
                     )}
-
-                    {/* Consent recorder */}
-                    <div>
-                      <p className="nx-section-header mb-3">Recording Consent</p>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={async () => {
-                            const token = sessionStorage.getItem('nexalink_token') || '';
-                            await fetch(`${API}/api/recordings/consent`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                              body: JSON.stringify({ room_name: roomName, participant_id: userName, consent_granted: true }),
-                            });
-                            showToast('Consent granted & recorded', 'success');
-                          }}
-                          className="nx-btn nx-btn-ghost flex-1 text-2xs py-2">
-                          <ShieldCheck className="w-3 h-3 text-emerald-400" /> Grant
-                        </button>
-                        <button
-                          onClick={async () => {
-                            const token = sessionStorage.getItem('nexalink_token') || '';
-                            await fetch(`${API}/api/recordings/consent`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-                              body: JSON.stringify({ room_name: roomName, participant_id: userName, consent_granted: false }),
-                            });
-                            showToast('Consent denied & recorded', 'info');
-                          }}
-                          className="nx-btn nx-btn-ghost flex-1 text-2xs py-2">
-                          <X className="w-3 h-3 text-rose-400" /> Deny
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 )}
               </div>

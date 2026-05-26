@@ -200,6 +200,7 @@ const io = new Server(httpServer, {
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  maxHttpBufferSize: 1e7, // 10MB buffer limit to support high-res Base64 profile pics
 });
 
 // In-memory mappings: roomId -> array of participant details
@@ -351,6 +352,9 @@ io.on('connection', (socket) => {
       // Update alias in place if already present
       existing.name = userAlias?.name || existing.name;
       existing.avatar = userAlias?.avatar || existing.avatar;
+      existing.profilePic = typeof userAlias?.profilePic === 'string' ? userAlias.profilePic.slice(0, 2000000) : existing.profilePic;
+      existing.bio = typeof userAlias?.bio === 'string' ? userAlias.bio.slice(0, 240) : existing.bio;
+      existing.isSharingScreen = userAlias?.isSharingScreen ?? existing.isSharingScreen;
     } else {
       // Add socket client as new participant
       const newParticipant = {
