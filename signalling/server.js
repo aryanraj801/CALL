@@ -68,32 +68,37 @@ loadPushSubscriptions();
 
 /**
  * Send a Web Push notification to a user who may be offline.
- * Silently no-ops if the user has no push subscription.
+ * Returns { delivered: boolean, noSubscription: boolean } so callers can
+ * distinguish between "push reached device" vs "device unreachable".
  */
 async function sendPush(targetUsername, payload) {
   const key = targetUsername?.toLowerCase();
   const subs = pushSubscriptions[key];
-  if (!subs) return;
+  if (!subs) return { delivered: false, noSubscription: true };
 
   // Handle backward compatibility (single subscription or array)
   const subArray = Array.isArray(subs) ? subs : [subs];
-  if (subArray.length === 0) return;
+  if (subArray.length === 0) return { delivered: false, noSubscription: true };
 
   console.log(`[WebPush] Sending push to ${subArray.length} active session endpoint(s) for <${targetUsername}>`);
+
+  let deliveredCount = 0;
 
   const promises = subArray.map(async (sub, idx) => {
     try {
       await webpush.sendNotification(sub, JSON.stringify(payload));
       console.log(`[WebPush] Push delivered to session endpoint #${idx + 1} for <${targetUsername}>`);
+      deliveredCount++;
+      return { expired: false, delivered: true };
     } catch (err) {
       if (err.statusCode === 410 || err.statusCode === 404) {
         console.log(`[WebPush] Session endpoint #${idx + 1} for <${targetUsername}> expired (410/404)`);
-        return { expired: true, endpoint: sub.endpoint };
+        return { expired: true, delivered: false, endpoint: sub.endpoint };
       } else {
-        console.error(`[WebPush] Failed at session endpoint #${idx + 1} for <${targetUsername}>:`, err.message);
+        console.error(`[WebPush] Failed at session endpoint #${idx + 1} for <${targetUsername}>:`, err.message, err.statusCode || '');
+        return { expired: false, delivered: false };
       }
     }
-    return { expired: false };
   });
 
   const results = await Promise.all(promises);
@@ -105,13 +110,21 @@ async function sendPush(targetUsername, payload) {
       if (pushSubscriptions[key].length === 0) {
         delete pushSubscriptions[key];
       }
-    } else if (expiredEndpoints.includes(pushSubscriptions[key].endpoint)) {
+    } else if (expiredEndpoints.includes(pushSubscriptions[key]?.endpoint)) {
       delete pushSubscriptions[key];
     }
     savePushSubscriptions();
     console.log(`[WebPush] Cleaned up ${expiredEndpoints.length} expired session subscription(s) for <${targetUsername}>`);
   }
+
+  return { delivered: deliveredCount > 0, noSubscription: false };
 }
+
+/**
+ * Pending call timeouts — tracks 30-second ringing windows for push-woken calls.
+ * Key: callerSocketId, Value: { timer, targetUsername }
+ */
+const pendingCallTimeouts = {};
 
 // Healthcheck endpoint
 app.get('/health', (req, res) => {
@@ -554,8 +567,11 @@ io.on('connection', (socket) => {
 
   // ── CALL INVITES ─────────────────────────────────────────────────────────
   // Caller emits call_invite; server routes it to the target by username.
-  // Payload: { targetUsername, callerName, callerUsername, room, callType }
-  socket.on('call_invite', ({ targetUsername, callerName, callerUsername, room, callType }) => {
+  // If target is online: deliver via socket (instant).
+  // If target is offline: attempt Web Push to wake their service worker.
+  //   - If push delivered: hold ringing for 30s waiting for response.
+  //   - If push failed: immediately report 'offline' (device unreachable).
+  socket.on('call_invite', async ({ targetUsername, callerName, callerUsername, room, callType }) => {
     if (typeof targetUsername !== 'string') return;
     const key = targetUsername.trim().toLowerCase();
     const targetSocketId = onlineUsers[key];
@@ -573,36 +589,77 @@ io.on('connection', (socket) => {
       console.log(`[Call] Invite from <${callerName}> to <${targetUsername}> — room: ${room}, type: ${callType}`);
       io.to(targetSocketId).emit('incoming_call', invitePayload);
     } else {
-      // User is offline — send a Web Push notification
-      console.log(`[Call] <${targetUsername}> is offline — sending Web Push`);
-      sendPush(key, {
+      // User is offline — attempt Web Push to wake their service worker
+      console.log(`[Call] <${targetUsername}> is offline — attempting Web Push wake-up`);
+
+      const pushResult = await sendPush(key, {
         type:      'session',
         sender:    invitePayload.callerName,
         body:      'NexaLink requesting an active session',
         room:      invitePayload.room,
         callType:  invitePayload.callType,
       });
-      // Also notify the caller the target is offline
-      socket.emit('call_invite_failed', { reason: 'offline', targetUsername });
+
+      if (pushResult.delivered) {
+        // Push reached the service worker → hold ringing for 30 seconds
+        console.log(`[Call] Push delivered to <${targetUsername}> — ringing via push for 30s`);
+        socket.emit('call_ringing_push', { targetUsername, message: 'Notification sent — waiting for response...' });
+
+        // Clear any existing timeout for this caller
+        if (pendingCallTimeouts[socket.id]) {
+          clearTimeout(pendingCallTimeouts[socket.id].timer);
+        }
+
+        // Set a 30-second timeout
+        const timer = setTimeout(() => {
+          console.log(`[Call] 30s timeout expired for <${targetUsername}> — no response after push`);
+          socket.emit('call_invite_timeout', { targetUsername, message: 'No response — user did not answer.' });
+          delete pendingCallTimeouts[socket.id];
+        }, 30000);
+
+        pendingCallTimeouts[socket.id] = { timer, targetUsername: key };
+      } else {
+        // Push failed — device is off or no subscription registered
+        const reason = pushResult.noSubscription
+          ? 'User has no registered device — notifications cannot be delivered.'
+          : 'Device is unreachable — it may be powered off or disconnected.';
+        console.log(`[Call] Push FAILED for <${targetUsername}> — ${reason}`);
+        socket.emit('call_invite_failed', { reason: 'offline', targetUsername, detail: reason });
+      }
     }
   });
 
   // Target responds: accepted | declined | merged
   // Payload: { callerId, response: 'accepted'|'declined'|'merged' }
+  // Also clears any pending push-ringing timeout for the caller.
   socket.on('call_response', ({ callerId, response }) => {
     if (typeof callerId !== 'string') return;
     const allowed = ['accepted', 'declined', 'merged'];
     const safeResponse = allowed.includes(response) ? response : 'declined';
+
+    // Clear the 30s push-ringing timeout if the callee responded in time
+    if (pendingCallTimeouts[callerId]) {
+      clearTimeout(pendingCallTimeouts[callerId].timer);
+      delete pendingCallTimeouts[callerId];
+      console.log(`[Call] Cleared push-ringing timeout for caller <${callerId}> — callee responded: ${safeResponse}`);
+    }
+
     io.to(callerId).emit('call_response', { response: safeResponse, responderId: socket.id });
     console.log(`[Call] Response from <${socket.id}> to <${callerId}>: ${safeResponse}`);
   });
 
-  // Caller cancels before target responds
+  // Caller cancels before target responds — also clears push-ringing timeout
   socket.on('call_cancel', ({ targetUsername }) => {
     if (typeof targetUsername !== 'string') return;
     const targetSocketId = onlineUsers[targetUsername.trim().toLowerCase()];
     if (targetSocketId) {
       io.to(targetSocketId).emit('call_cancelled', { callerId: socket.id });
+    }
+    // Clear the 30s push-ringing timeout if caller cancels
+    if (pendingCallTimeouts[socket.id]) {
+      clearTimeout(pendingCallTimeouts[socket.id].timer);
+      delete pendingCallTimeouts[socket.id];
+      console.log(`[Call] Caller cancelled — cleared push-ringing timeout for <${targetUsername}>`);
     }
   });
 
@@ -731,6 +788,14 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[Signalling] Client disconnected: ${socket.id}`);
+
+    // Clean up any pending push-ringing timeout for this caller
+    if (pendingCallTimeouts[socket.id]) {
+      clearTimeout(pendingCallTimeouts[socket.id].timer);
+      delete pendingCallTimeouts[socket.id];
+      console.log(`[Call] Cleaned up push-ringing timeout for disconnected caller <${socket.id}>`);
+    }
+
     // Clean presence registry
     if (registeredUsername && onlineUsers[registeredUsername] === socket.id) {
       delete onlineUsers[registeredUsername];

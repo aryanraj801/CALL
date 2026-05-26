@@ -57,7 +57,7 @@ interface OutgoingCall {
   room: string;
   callType: 'voice' | 'video';
   callId?: number;
-  status: 'ringing' | 'accepted' | 'declined' | 'failed';
+  status: 'ringing' | 'ringing_push' | 'accepted' | 'declined' | 'failed' | 'timeout';
   errorReason?: string;
 }
 
@@ -1447,12 +1447,35 @@ export default function App() {
         callType:       callType,
         callId:         callId
       });
-      socket.once('call_invite_failed', ({ reason }: { reason: string }) => {
-        showToast(`Cannot reach ${username}: ${reason === 'offline' ? 'user is offline' : reason}`, 'error');
-        setOutgoingCall(prev => prev ? { ...prev, status: 'failed', errorReason: reason === 'offline' ? 'User is offline' : reason } : null);
+
+      // Push reached the offline peer's service worker — hold ringing for 30s
+      socket.once('call_ringing_push', ({ targetUsername: _target, message }: { targetUsername: string; message: string }) => {
+        showToast(`📡 ${message}`, 'info');
+        setOutgoingCall(prev => prev ? { ...prev, status: 'ringing_push' } : null);
+      });
+
+      // 30s timeout expired — peer didn't respond to the push notification
+      socket.once('call_invite_timeout', ({ targetUsername: _target, message }: { targetUsername: string; message: string }) => {
+        showToast(`⏱️ ${username}: ${message}`, 'error');
+        setOutgoingCall(prev => prev ? { ...prev, status: 'timeout', errorReason: message } : null);
         if (callId) {
           updateCallStatusOnServer(callId, 'missed');
         }
+        // Clean up the other listeners
+        socket.off('call_ringing_push');
+        socket.off('call_invite_failed');
+      });
+
+      // Push failed entirely — device is off / no subscription
+      socket.once('call_invite_failed', ({ reason, detail }: { reason: string; detail?: string }) => {
+        showToast(`Cannot reach ${username}: ${detail || (reason === 'offline' ? 'user is offline' : reason)}`, 'error');
+        setOutgoingCall(prev => prev ? { ...prev, status: 'failed', errorReason: detail || (reason === 'offline' ? 'User is offline — device unreachable.' : reason) } : null);
+        if (callId) {
+          updateCallStatusOnServer(callId, 'missed');
+        }
+        // Clean up the other listeners
+        socket.off('call_ringing_push');
+        socket.off('call_invite_timeout');
       });
     }
   };
@@ -2591,22 +2614,24 @@ export default function App() {
           >
             {/* Ringing ring animation */}
             <div className="relative flex items-center justify-center">
-              {outgoingCall.status === 'ringing' && (
+              {(outgoingCall.status === 'ringing' || outgoingCall.status === 'ringing_push') && (
                 <>
                   <span className="absolute w-24 h-24 rounded-full animate-ping"
-                    style={{ background: 'rgba(227,154,122,0.18)', animationDuration: '1.2s' }} />
+                    style={{ background: outgoingCall.status === 'ringing_push' ? 'rgba(96,165,250,0.18)' : 'rgba(227,154,122,0.18)', animationDuration: '1.2s' }} />
                   <span className="absolute w-20 h-20 rounded-full animate-ping"
-                    style={{ background: 'rgba(227,154,122,0.12)', animationDuration: '1.2s', animationDelay: '0.3s' }} />
+                    style={{ background: outgoingCall.status === 'ringing_push' ? 'rgba(96,165,250,0.12)' : 'rgba(227,154,122,0.12)', animationDuration: '1.2s', animationDelay: '0.3s' }} />
                 </>
               )}
               <div className="relative w-16 h-16 rounded-full flex items-center justify-center text-3xl shadow-xl"
                 style={{ 
-                  background: outgoingCall.status === 'declined' || outgoingCall.status === 'failed'
+                  background: outgoingCall.status === 'declined' || outgoingCall.status === 'failed' || outgoingCall.status === 'timeout'
                     ? 'linear-gradient(135deg, #ef4444, #b91c1c)' 
+                    : outgoingCall.status === 'ringing_push'
+                    ? 'linear-gradient(135deg, #60a5fa, #3b82f6)'
                     : 'linear-gradient(135deg, #E39A7A, #FFD4AC)', 
                   border: '2px solid rgba(255,212,172,0.5)' 
                 }}>
-                {outgoingCall.status === 'declined' || outgoingCall.status === 'failed' ? '❌' : (outgoingCall.callType === 'voice' ? '📞' : '📹')}
+                {outgoingCall.status === 'declined' || outgoingCall.status === 'failed' ? '❌' : outgoingCall.status === 'timeout' ? '⏱️' : outgoingCall.status === 'ringing_push' ? '📡' : (outgoingCall.callType === 'voice' ? '📞' : '📹')}
               </div>
             </div>
 
@@ -2615,28 +2640,36 @@ export default function App() {
               <p className="text-[10px] font-semibold tracking-widest uppercase"
                 style={{ color: 'rgba(255,212,172,0.55)' }}>
                 {outgoingCall.status === 'ringing' && 'Calling Peer...'}
+                {outgoingCall.status === 'ringing_push' && 'Notifying Peer...'}
                 {outgoingCall.status === 'accepted' && 'Connecting...'}
                 {outgoingCall.status === 'declined' && 'Call Rejected'}
                 {outgoingCall.status === 'failed' && 'Connection Failed'}
+                {outgoingCall.status === 'timeout' && 'No Response'}
               </p>
               <p className="text-xl font-bold mt-1" style={{ color: '#FFD4AC' }}>
                 {outgoingCall.targetUsername}
               </p>
               <p className="text-2xs font-mono mt-1 text-slate-400">
                 {outgoingCall.status === 'ringing' && 'Waiting for handshake...'}
+                {outgoingCall.status === 'ringing_push' && 'Push notification sent — waiting up to 30s for response...'}
                 {outgoingCall.status === 'accepted' && 'Establishing WebRTC channels...'}
                 {outgoingCall.status === 'declined' && 'The recipient declined your call.'}
                 {outgoingCall.status === 'failed' && (outgoingCall.errorReason || 'User is offline.')}
+                {outgoingCall.status === 'timeout' && (outgoingCall.errorReason || 'User did not respond to the notification.')}
               </p>
             </div>
 
             {/* Action buttons */}
             <div className="flex flex-col gap-2.5 w-full mt-2">
-              {outgoingCall.status === 'ringing' && (
+              {(outgoingCall.status === 'ringing' || outgoingCall.status === 'ringing_push') && (
                 <button
                   onClick={() => {
                     // Cancel the call
                     socket?.emit('call_cancel', { targetUsername: outgoingCall.targetUsername });
+                    // Clean up lingering listeners
+                    socket?.off('call_ringing_push');
+                    socket?.off('call_invite_timeout');
+                    socket?.off('call_invite_failed');
                     if (outgoingCall.callId) {
                       updateCallStatusOnServer(outgoingCall.callId, 'missed');
                     }
@@ -2654,7 +2687,7 @@ export default function App() {
                 </button>
               )}
 
-              {(outgoingCall.status === 'declined' || outgoingCall.status === 'failed') && (
+              {(outgoingCall.status === 'declined' || outgoingCall.status === 'failed' || outgoingCall.status === 'timeout') && (
                 <>
                   <button
                     onClick={() => {
