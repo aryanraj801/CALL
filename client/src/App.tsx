@@ -250,6 +250,16 @@ export default function App() {
     return (saved as any) || 'connect';
   });
   const [activeChatContact, setActiveChatContact] = useState<Contact | null>(null);
+  const activeChatContactRef = useRef<Contact | null>(null);
+  useEffect(() => {
+    activeChatContactRef.current = activeChatContact;
+  }, [activeChatContact]);
+
+  const lobbySubViewRef = useRef<'connect' | 'chat_lobby' | 'settings'>('connect');
+  useEffect(() => {
+    lobbySubViewRef.current = lobbySubView;
+  }, [lobbySubView]);
+
   const [lobbyChats, setLobbyChats] = useState<{ [contactId: string]: ChatMessage[] }>({});
   const [lobbyChatInput, setLobbyChatInput] = useState('');
   const [showInboxDropdown, setShowInboxDropdown] = useState(false);
@@ -1725,7 +1735,7 @@ export default function App() {
       });
 
       // Update unread count if we are not actively chatting with them
-      if (!activeChatContact || activeChatContact.username.toLowerCase() !== senderUsername.toLowerCase() || lobbySubView !== 'chat_lobby') {
+      if (!activeChatContactRef.current || activeChatContactRef.current.username.toLowerCase() !== senderUsername.toLowerCase() || lobbySubViewRef.current !== 'chat_lobby') {
         setUnreadChatCounts(prev => {
           const currentUnread = prev[senderUsername] || 0;
           return {
@@ -1938,7 +1948,7 @@ export default function App() {
       socket.off('presence_update', handlePresenceUpdate);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, userName, activeChatContact, lobbySubView, contacts, pendingFiles]);
+  }, [socket, userName]);
 
   /* ── Video refs ─────────────────────── */
   const localVideoRef  = useRef<HTMLVideoElement | null>(null);
