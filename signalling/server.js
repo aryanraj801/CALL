@@ -153,7 +153,8 @@ app.post('/api/push/subscribe', (req, res) => {
     pushSubscriptions[key].push(subscription);
     // Limit to max 5 sessions to prevent stale array leaks
     if (pushSubscriptions[key].length > 5) {
-      pushSubscriptions[key].shift();
+      const excess = pushSubscriptions[key].length - 5;
+      pushSubscriptions[key].splice(0, excess);
     }
   }
 
