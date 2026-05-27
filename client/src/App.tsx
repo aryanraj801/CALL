@@ -476,6 +476,11 @@ export default function App() {
     return saved ? JSON.parse(saved) : { desktopEnabled: true, showToastAlerts: true, pushWakingEnabled: true };
   });
 
+  const [autoPipEnabled, setAutoPipEnabled] = useState<boolean>(() => {
+    const saved = sessionStorage.getItem('nexalink_auto_pip');
+    return saved !== 'false'; // default to true
+  });
+
   useEffect(() => {
     if (theme === 'light') {
       document.documentElement.classList.add('light-mode');
@@ -493,6 +498,10 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem('nexalink_notif_settings', JSON.stringify(notifSettings));
   }, [notifSettings]);
+
+  useEffect(() => {
+    sessionStorage.setItem('nexalink_auto_pip', String(autoPipEnabled));
+  }, [autoPipEnabled]);
 
   const isElectron = typeof window !== 'undefined' && (window.navigator.userAgent.toLowerCase().includes('electron') || (window as any).process?.versions?.electron !== undefined);
   const isNotificationGranted = notifPermission === 'granted';
@@ -2474,6 +2483,99 @@ export default function App() {
     if (screenVideoRef.current && screenStream) screenVideoRef.current.srcObject = screenStream;
   }, [screenStream]);
 
+  /* ── Picture-in-Picture (PiP) Handlers ── */
+  const [isPipActive, setIsPipActive] = useState(false);
+
+  const toggleManualPip = async () => {
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        setIsPipActive(false);
+      } else {
+        if (screenStream && screenVideoRef.current) {
+          await screenVideoRef.current.requestPictureInPicture();
+          setIsPipActive(true);
+        } else if (videoEnabled && localVideoRef.current) {
+          await localVideoRef.current.requestPictureInPicture();
+          setIsPipActive(true);
+        } else {
+          showToast('No active video stream to enter Picture-in-Picture.', 'info');
+        }
+      }
+    } catch (err) {
+      console.warn('[PiP] Manual toggle failed:', err);
+      showToast('Picture-in-Picture mode not supported or failed to launch.', 'error');
+    }
+  };
+
+  // Sync state if user exits PiP using the browser's native overlay button
+  useEffect(() => {
+    const handleEnterPip = () => setIsPipActive(true);
+    const handleLeavePip = () => setIsPipActive(false);
+
+    const localEl = localVideoRef.current;
+    const screenEl = screenVideoRef.current;
+
+    if (localEl) {
+      localEl.addEventListener('enterpictureinpicture', handleEnterPip);
+      localEl.addEventListener('leavepictureinpicture', handleLeavePip);
+    }
+    if (screenEl) {
+      screenEl.addEventListener('enterpictureinpicture', handleEnterPip);
+      screenEl.addEventListener('leavepictureinpicture', handleLeavePip);
+    }
+
+    return () => {
+      if (localEl) {
+        localEl.removeEventListener('enterpictureinpicture', handleEnterPip);
+        localEl.removeEventListener('leavepictureinpicture', handleLeavePip);
+      }
+      if (screenEl) {
+        screenEl.removeEventListener('enterpictureinpicture', handleEnterPip);
+        screenEl.removeEventListener('leavepictureinpicture', handleLeavePip);
+      }
+    };
+  }, [localStream, screenStream]);
+
+  // Automatic PiP trigger on page minimize or tab change
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (!autoPipEnabled || !inRoom) return;
+
+      if (document.hidden) {
+        try {
+          if (screenStream && screenVideoRef.current) {
+            if (document.pictureInPictureElement !== screenVideoRef.current) {
+              await screenVideoRef.current.requestPictureInPicture();
+              setIsPipActive(true);
+            }
+          } else if (videoEnabled && localVideoRef.current) {
+            if (document.pictureInPictureElement !== localVideoRef.current) {
+              await localVideoRef.current.requestPictureInPicture();
+              setIsPipActive(true);
+            }
+          }
+        } catch (err) {
+          console.warn('[PiP] Auto PiP enter on minimize failed:', err);
+        }
+      } else {
+        try {
+          if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture();
+            setIsPipActive(false);
+          }
+        } catch (err) {
+          console.warn('[PiP] Auto PiP exit on focus failed:', err);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [autoPipEnabled, inRoom, screenStream, videoEnabled]);
+
   /* ── Media init ─────────────────────── */
   const handleInitMedia = async () => {
     const res = await initMedia(callType);
@@ -2736,6 +2838,22 @@ export default function App() {
                     type="checkbox" 
                     checked={notifSettings.showToastAlerts} 
                     onChange={e => setNotifSettings(prev => ({ ...prev, showToastAlerts: e.target.checked }))} 
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Auto Picture-in-Picture on Minimize</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Automatically stream active video/screenshare in floating window when window is minimized or hidden</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={autoPipEnabled} 
+                    onChange={e => setAutoPipEnabled(e.target.checked)} 
                   />
                   <span className="nx-toggle-track" />
                   <span className="nx-toggle-thumb" />
@@ -5078,6 +5196,11 @@ export default function App() {
                   className={`nx-btn-icon nx-tooltip ${screenStream ? 'active' : ''}`}
                   data-tip={screenStream ? 'Stop Sharing' : 'Share Screen'}>
                   {screenStream ? <MonitorOff className="w-4 h-4" /> : <Monitor className="w-4 h-4" />}
+                </button>
+                <button onClick={toggleManualPip}
+                  className={`nx-btn-icon nx-tooltip ${isPipActive ? 'active' : ''}`}
+                  data-tip={isPipActive ? 'Exit Floating PiP' : 'Float Video (PiP)'}>
+                  <PictureInPicture2 className="w-4 h-4" />
                 </button>
                 <button onClick={() => setFitMode(mode => mode === 'cover' ? 'contain' : 'cover')}
                   className="nx-btn-icon nx-tooltip"
