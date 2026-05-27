@@ -487,8 +487,8 @@ h1, h2, h3, h4, h5, h6 {
   position: absolute !important;
   bottom: 20px !important;
   right: 20px !important;
-  width: 148px !important;
-  height: 108px !important;
+  width: 170px !important;
+  height: 120px !important;
   z-index: 10 !important;
   min-height: 0 !important;
   border-radius: 14px !important;
@@ -496,12 +496,16 @@ h1, h2, h3, h4, h5, h6 {
   border-color: rgba(255,255,255,0.22) !important;
   box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06) !important;
   cursor: move;
-  transition: width 0.25s, height 0.25s, border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
   backdrop-filter: blur(8px);
+  resize: both !important;
+  overflow: hidden !important;
+  max-width: 400px !important;
+  max-height: 300px !important;
+  min-width: 120px !important;
+  min-height: 90px !important;
 }
 .layout-pip-self:hover {
-  width: 190px !important;
-  height: 138px !important;
   border-color: rgba(255,212,172,0.45) !important;
   box-shadow: 0 12px 40px rgba(0,0,0,0.6), 0 0 0 2px rgba(255,212,172,0.3) !important;
 }
@@ -527,11 +531,82 @@ h1, h2, h3, h4, h5, h6 {
   border-width: 2px !important;
   border-color: rgba(255,255,255,0.22) !important;
   box-shadow: 0 8px 32px rgba(0,0,0,0.5) !important;
-  transition: width 0.25s, height 0.25s, border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  resize: both !important;
   overflow: hidden !important;
+  max-width: 400px !important;
+  max-height: 300px !important;
+  min-width: 120px !important;
+  min-height: 90px !important;
 }
 .layout-pip-local-peer:hover {
   border-color: rgba(255,212,172,0.45) !important;
+}
+
+/* In-page PiP hover quick overlay controls */
+.pip-hover-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 40;
+  opacity: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.video-tile:hover .pip-hover-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pip-close-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(239, 68, 68, 0.88);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: transform 0.15s, background-color 0.15s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.pip-close-btn:hover {
+  background: #dc2626;
+  transform: scale(1.15);
+}
+
+.pip-fullscreen-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.95);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: transform 0.15s, background-color 0.15s;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+}
+
+.pip-fullscreen-btn:hover {
+  background: rgb(79, 70, 229);
+  transform: scale(1.08);
 }
 
 /* Horizontal strip — self on left 40%, remote on right 60% */

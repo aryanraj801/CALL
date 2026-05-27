@@ -5056,6 +5056,19 @@ export default function App() {
                     </button>
                   </div>
 
+                  {/* Floating PiP Hover Overlay */}
+                  {streamLayout === 'pip-remote' && (
+                    <div className="pip-hover-overlay">
+                      <button onClick={(e) => { e.stopPropagation(); toggleLocalHide('self'); }} className="pip-close-btn" title="Hide self video">
+                        <X className="w-3 h-3" />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); openFullscreen('tile-self'); }} className="pip-fullscreen-btn" title="Expand to Fullscreen">
+                        <Maximize2 className="w-4 h-4" />
+                        <span className="text-[9px] uppercase tracking-wider font-semibold">Expand</span>
+                      </button>
+                    </div>
+                  )}
+
                   {/* Muted / vid-off indicators */}
                   {!audioEnabled && (
                     <div className="absolute top-3 right-3">
@@ -5173,6 +5186,19 @@ export default function App() {
                           {locallyMutedPeers.includes(peer.id) ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
                         </button>
                       </div>
+
+                      {/* Floating PiP Hover Overlay */}
+                      {streamLayout === 'pip-local' && (
+                        <div className="pip-hover-overlay">
+                          <button onClick={(e) => { e.stopPropagation(); toggleLocalHide(peer.id); }} className="pip-close-btn" title={`Hide ${peer.name}`}>
+                            <X className="w-3 h-3" />
+                          </button>
+                          <button onClick={(e) => { e.stopPropagation(); openFullscreen(`tile-${peer.id}`); }} className="pip-fullscreen-btn" title="Expand to Fullscreen">
+                            <Maximize2 className="w-4 h-4" />
+                            <span className="text-[9px] uppercase tracking-wider font-semibold">Expand</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
