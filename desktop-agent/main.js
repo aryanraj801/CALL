@@ -7,6 +7,8 @@ let mainWindow = null;
 let tray = null;
 let wsClient = null;
 let isTunnelActive = false;
+let isNotificationsEnabled = true;
+let isQuitting = false;
 
 const iconPath = path.join(__dirname, 'icon.png');
 
@@ -55,6 +57,13 @@ function createWindow() {
     console.error(`[Desktop Agent] Dashboard load failed (${code}): ${description}`);
   });
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -63,24 +72,40 @@ function createWindow() {
 // Setup background system trays and context menus
 function setupTray() {
   tray = new Tray(getAppIcon());
+  updateTrayMenu();
+  tray.setToolTip('NexaLink Desktop Control Agent');
+}
+
+function updateTrayMenu() {
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Show Dashboard',
+      label: 'Open NexaLink Dashboard',
       click: () => {
-        // BUG FIX #9: Guard mainWindow null-check before calling show()
         if (mainWindow) {
           mainWindow.show();
         }
       }
     },
-    { label: 'Toggle Input Tunnel', click: () => toggleTunnel() },
+    {
+      label: isNotificationsEnabled ? 'Disable Notifications' : 'Enable Notifications',
+      click: () => {
+        isNotificationsEnabled = !isNotificationsEnabled;
+        console.log(`[Desktop Agent] System Notifications ${isNotificationsEnabled ? 'ENABLED' : 'DISABLED'}`);
+        updateTrayMenu();
+      }
+    },
     { type: 'separator' },
+    { label: 'Toggle Input Tunnel', click: () => toggleTunnel() },
     { label: 'Force Kill Session (Ctrl+Shift+K)', click: () => triggerEmergencyKill() },
     { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
+    {
+      label: 'Quit NexaLink',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    },
   ]);
-
-  tray.setToolTip('NexaLink Desktop Control Agent');
   tray.setContextMenu(contextMenu);
 }
 
