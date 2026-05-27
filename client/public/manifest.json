@@ -1,0 +1,24 @@
+{
+  "name": "NexaLink Secure Real-Time Communications",
+  "short_name": "NexaLink",
+  "description": "Premium secure real-time communications app with WebRTC, Web Push, voice morphing, and collaborative whiteboard.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#060812",
+  "theme_color": "#6366f1",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

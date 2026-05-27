@@ -7,7 +7,8 @@ import {
   BarChart2, Activity, Hash, LogOut,
   AlertTriangle, Headphones, Copy, PhoneCall,
   LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Paperclip,
-  Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard
+  Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard,
+  Bell, Download
 } from 'lucide-react';
 import { useWebRTC, Participant } from './hooks/useWebRTC.ts';
 import { useAudioPipeline } from './hooks/useAudioPipeline.ts';
@@ -244,6 +245,51 @@ const getInitialNavigation = (): { view: 'landing' | 'lobby' | 'connecting' | 'r
 export default function App() {
   /* Notifications */
   const { requestPermission, unsubscribe: unsubscribeNotif, notify } = useNotifications();
+
+  /* PWA Installation States & Handlers */
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showPwaInstallGuide, setShowPwaInstallGuide] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(() => {
+    return typeof window !== 'undefined' ? window.matchMedia('(display-mode: standalone)').matches : false;
+  });
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      console.log('[PWA] beforeinstallprompt event captured ✔');
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    const handleAppInstalled = () => {
+      console.log('[PWA] App installed successfully 🎉');
+      setIsStandalone(true);
+      setShowPwaInstallGuide(false);
+    };
+
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const triggerPwaInstall = async () => {
+    if (!deferredPrompt) {
+      alert("Browser installation prompt is not ready yet. In Chromium-based browsers, look for the 'Install' icon (computer with down arrow) in the right side of the address bar, or click settings (three dots) -> 'Save and share' -> 'Install page' / 'Install NexaLink'.");
+      return;
+    }
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`[PWA] Install prompt outcome: ${outcome}`);
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      setIsStandalone(true);
+      setShowPwaInstallGuide(false);
+    }
+  };
 
   /* Auth state */
   const [authToken, setAuthToken] = useState<string | null>(() => sessionStorage.getItem('nexalink_token'));
@@ -2484,6 +2530,207 @@ export default function App() {
     );
   };
 
+  const renderSecureSetupGate = () => {
+    return (
+      <div className="w-full flex items-center justify-center p-6" style={{ minHeight: 'calc(100vh - 120px)' }}>
+        <div className="w-full max-w-xl glass-card rounded-3xl p-8 flex flex-col gap-6 fade-up shadow-2xl relative overflow-hidden text-center"
+          style={{
+            background: 'linear-gradient(145deg, rgba(12,15,28,0.92) 0%, rgba(6,8,18,0.98) 100%)',
+            border: '1.5px solid rgba(99,102,241,0.15)',
+            boxShadow: '0 30px 80px rgba(0,0,0,0.8), 0 0 80px rgba(99,102,241,0.06)'
+          }}>
+          {/* Decorative glowing grid background */}
+          <div className="absolute -top-20 -right-20 w-44 h-44 bg-indigo-600/10 rounded-full blur-3xl" />
+          <div className="absolute -bottom-20 -left-20 w-44 h-44 bg-indigo-600/10 rounded-full blur-3xl" />
+
+          <div className="mx-auto w-16 h-16 rounded-2xl flex items-center justify-center bg-indigo-500/10 border border-indigo-500/25 mb-2 text-white">
+            <ShieldAlert className="w-8 h-8 text-indigo-400" />
+          </div>
+
+          <div>
+            <span className="nx-badge nx-badge-indigo mb-1.5 uppercase tracking-widest text-[9px]">Cryptographic Sandbox Required</span>
+            <h2 className="text-xl font-bold text-white font-display">Secure Connection Setup Required</h2>
+            <p className="text-3xs text-slate-500 mt-1 uppercase tracking-widest font-mono">E2EE Terminal Gate</p>
+          </div>
+
+          <p className="text-xs text-slate-300 leading-relaxed max-w-md mx-auto">
+            To establish military-grade secure peer-to-peer tunnels, receive offline calling requests, and prevent background notification relay leaks, NexaLink must operate within an isolated desktop sandbox.
+          </p>
+
+          <div className="flex flex-col gap-3 max-w-sm mx-auto w-full mt-2">
+            <button
+              onClick={handleEnableNotifications}
+              className="nx-btn nx-btn-primary py-3.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 w-full shadow-lg hover:shadow-indigo-500/20 transition-all duration-300"
+            >
+              <Bell className="w-4 h-4" /> Enable Desktop Notifications
+            </button>
+            <p className="text-[10px] text-slate-500 leading-normal">
+              Clicking will prompt browser background permissions and open the custom installation terminal.
+            </p>
+          </div>
+
+          <div className="border-t border-white/5 pt-4 flex items-center justify-between text-[10px] text-slate-500 font-mono w-full">
+            <span>DEVICE MATCH: OK</span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping" />
+              WAITING FOR PWA SECURE ENV...
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPwaInstallGuideModal = () => {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md fade-in">
+        <div className="w-full max-w-4xl glass-card rounded-3xl p-6 sm:p-8 flex flex-col gap-6 shadow-2xl relative overflow-hidden max-h-[90vh] overflow-y-auto"
+          style={{
+            background: 'linear-gradient(145deg, rgba(15,18,36,0.95) 0%, rgba(6,8,18,0.99) 100%)',
+            border: '1.5px solid rgba(99,102,241,0.2)',
+            boxShadow: '0 30px 80px rgba(0,0,0,0.8), 0 0 100px rgba(99,102,241,0.08)'
+          }}>
+          
+          <button
+            onClick={() => setShowPwaInstallGuide(false)}
+            className="absolute top-4 right-4 w-8 h-8 rounded-full flex items-center justify-center bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 transition-all duration-200 z-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+
+          <div className="text-center">
+            <span className="nx-badge nx-badge-indigo mb-1.5 uppercase tracking-widest text-[9px]">PWA Terminal Guide</span>
+            <h2 className="text-xl sm:text-2xl font-bold text-white font-display flex items-center justify-center gap-2">
+              <Download className="w-6 h-6 text-indigo-400" />
+              Install NexaLink Secure App
+            </h2>
+            <p className="text-2xs text-slate-400 max-w-md mx-auto mt-1 leading-relaxed">
+              Unlock isolated hardware sandbox execution and E2E offline background calling capabilities by installing the desktop client.
+            </p>
+          </div>
+
+          {/* Grid of Steps */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 my-2">
+            {/* Step 1 */}
+            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-indigo-500/10 border border-indigo-500/20 text-xs font-bold text-indigo-400">
+                01
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white font-display">Locate Trigger</h3>
+                <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                  Look at the right side of the address bar for the Install Icon (PC with arrow), or open Chrome's options menu (three dots) &rarr; 'Save and share' &rarr; 'Install page'.
+                </p>
+              </div>
+              <div className="mt-auto pt-2">
+                <svg viewBox="0 0 320 120" className="w-full h-auto rounded-lg border border-white/5 bg-slate-900/60 p-2 shadow-inner">
+                  <rect x="10" y="20" width="300" height="32" rx="6" fill="#0c1020" stroke="rgba(255,255,255,0.06)" strokeWidth="1.5" />
+                  <circle cx="28" cy="36" r="4" fill="#38bdf8" />
+                  <text x="42" y="41" fill="rgba(255,255,255,0.4)" fontSize="10" fontFamily="monospace">nexalink.app/lobby</text>
+                  <g transform="translate(255, 24)">
+                    <rect x="-4" y="-2" width="28" height="24" rx="4" fill="rgba(99,102,241,0.2)" stroke="rgba(99,102,241,0.4)" strokeWidth="1" />
+                    <circle cx="10" cy="10" r="12" fill="none" stroke="rgba(99,102,241,0.4)" strokeWidth="1" className="animate-ping" style={{ transformOrigin: '10px 10px', animationDuration: '2.5s' }} />
+                    <path d="M4 2v6h12V2H4zm8 10h4V9h-4v3zm-5-3v3H5V9h2z" fill="#818cf8" transform="scale(1.2)" />
+                  </g>
+                  <path d="M288 36l-8-8v16z" fill="#94a3b8" />
+                  <g transform="translate(268, 42)" className="animate-bounce" style={{ animationDuration: '1.5s' }}>
+                    <path d="M0 0l4 10-2 1-4-8-2 2z" fill="#f43f5e" />
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            {/* Step 2 */}
+            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-indigo-500/10 border border-indigo-500/20 text-xs font-bold text-indigo-400">
+                02
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white font-display">Accept Promotion</h3>
+                <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                  Click 'Install' on the native browser installation confirmation popup to build the isolated sandbox application.
+                </p>
+              </div>
+              <div className="mt-auto pt-2">
+                <svg viewBox="0 0 320 120" className="w-full h-auto rounded-lg border border-white/5 bg-slate-900/60 p-2 shadow-inner">
+                  <rect x="40" y="15" width="240" height="90" rx="12" fill="#0d1127" stroke="rgba(99,102,241,0.3)" strokeWidth="1.5" />
+                  <rect x="56" y="32" width="28" height="28" rx="8" fill="#6366f1" />
+                  <text x="70" y="50" fill="white" fontSize="14" fontWeight="bold" textAnchor="middle">N</text>
+                  <text x="96" y="42" fill="white" fontSize="11" fontWeight="bold">Install NexaLink?</text>
+                  <text x="96" y="54" fill="#64748b" fontSize="8">nexalink.app</text>
+                  <rect x="156" y="70" width="54" height="22" rx="6" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
+                  <text x="183" y="84" fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="middle">Cancel</text>
+                  <rect x="216" y="70" width="50" height="22" rx="6" fill="#4f46e5" stroke="rgba(255,255,255,0.1)" strokeWidth="1" />
+                  <circle cx="241" cy="81" r="10" fill="none" stroke="rgba(99,102,241,0.5)" strokeWidth="1" className="animate-ping" style={{ transformOrigin: '241px 81px', animationDuration: '2.5s' }} />
+                  <text x="241" y="84" fill="white" fontSize="8" fontWeight="bold" textAnchor="middle">Install</text>
+                  <g transform="translate(245, 83)" className="animate-bounce" style={{ animationDuration: '1.5s' }}>
+                    <path d="M0 0l4 10-2 1-4-8-2 2z" fill="#f43f5e" />
+                  </g>
+                </svg>
+              </div>
+            </div>
+
+            {/* Step 3 */}
+            <div className="flex flex-col gap-3 p-4 rounded-2xl bg-white/[0.02] border border-white/5 hover:border-white/10 transition-all duration-300">
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-indigo-500/10 border border-indigo-500/20 text-xs font-bold text-indigo-400">
+                03
+              </div>
+              <div>
+                <h3 className="text-xs font-bold text-white font-display">Standby Connected</h3>
+                <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                  The standalone sandbox environment launches. Background listeners start instantly, bypassing the gate automatically!
+                </p>
+              </div>
+              <div className="mt-auto pt-2">
+                <svg viewBox="0 0 320 120" className="w-full h-auto rounded-lg border border-white/5 bg-slate-900/60 p-2 shadow-inner">
+                  <rect x="20" y="10" width="280" height="100" rx="10" fill="#070a13" stroke="rgba(16,185,129,0.3)" strokeWidth="1.5" />
+                  <rect x="20" y="10" width="280" height="20" rx="10" fill="#0b0f19" />
+                  <circle cx="34" cy="20" r="3" fill="#ef4444" />
+                  <circle cx="44" cy="20" r="3" fill="#eab308" />
+                  <circle cx="54" cy="20" r="3" fill="#22c55e" />
+                  <text x="160" y="24" fill="#475569" fontSize="8" textAnchor="middle" fontWeight="bold">NexaLink E2E Sandbox</text>
+                  <g transform="translate(160, 65)">
+                    <circle cx="0" cy="0" r="18" fill="rgba(16,185,129,0.1)" stroke="rgba(16,185,129,0.4)" strokeWidth="1.5" />
+                    <path d="M-6 0l4 4 8-8" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <text x="0" y="32" fill="#10b981" fontSize="9" fontWeight="bold" textAnchor="middle" className="animate-pulse">SANDBOX SECURED</text>
+                  </g>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-2 pt-4 border-t border-white/5">
+            <div className="text-left">
+              <span className="text-[10px] text-slate-500 font-mono block">SUPPORTED BROWSERS:</span>
+              <span className="text-[10px] text-indigo-400 font-semibold font-mono">Chrome / Comet / Edge / Brave / Opera</span>
+            </div>
+            
+            <button
+              onClick={triggerPwaInstall}
+              className="nx-btn nx-btn-primary py-3 px-6 text-xs font-bold uppercase tracking-wider flex items-center gap-2 shadow-lg hover:shadow-indigo-500/20 transition-all duration-300 w-full sm:w-auto"
+            >
+              <Download className="w-4 h-4 animate-bounce" /> Install NexaLink Client
+            </button>
+          </div>
+
+          {/* Browser Specific Tips */}
+          <div className="p-3.5 rounded-xl bg-indigo-950/20 border border-indigo-900/35 text-[10px] text-indigo-300/80 leading-relaxed text-left flex items-start gap-2.5">
+            <span className="text-xs">💡</span>
+            <div>
+              <strong>Quick Tip:</strong> If the button above does not trigger, your browser might have blocked automatic prompts. 
+              Look for the <strong>small monitor/install icon</strong> inside Chrome's address bar next to the bookmark star, or tap <strong>'...' menu &rarr; 'Save and share' &rarr; 'Install page'</strong>.
+            </div>
+          </div>
+
+        </div>
+      </div>
+    );
+  };
+
+  /* ═══════════════════════════════════════
+     RENDER
+  ═══════════════════════════════════════ */
+
   /* ═══════════════════════════════════════
      RENDER
   ═══════════════════════════════════════ */
@@ -2492,6 +2739,9 @@ export default function App() {
 
       {/* Toast */}
       {toast && <Toast msg={toast.msg} type={toast.type} onDone={() => setToast(null)} />}
+
+      {/* PWA Install Guide */}
+      {showPwaInstallGuide && renderPwaInstallGuideModal()}
 
       {/* ── INCOMING CALL MODAL ─────────────────────────────────────────────── */}
       {incomingCall && (
@@ -3010,6 +3260,8 @@ export default function App() {
 
             </div>
           </div>
+        ) : (!isStandalone && currentView !== 'landing') ? (
+          renderSecureSetupGate()
         ) : !inRoom ? (
           currentView === 'landing' ? (
             /* ════════════════════════════

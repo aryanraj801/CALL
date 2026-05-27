@@ -8,6 +8,25 @@
  * the correct room/session via a URL query param (?room=<name>).
  */
 
+/* ── PROGRESSIVE WEB APP: OFFLINE CACHING ─────────────────────────────────── */
+const CACHE_NAME = 'nexalink-cache-v1';
+const ASSETS_TO_CACHE = [
+  '/',
+  '/index.html',
+  '/manifest.json',
+  '/icon-192.png',
+  '/nexalink_dashboard_preview.png'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      console.log('[NexaLink SW] Pre-caching static assets for offline support');
+      return cache.addAll(ASSETS_TO_CACHE);
+    }).then(() => self.skipWaiting())
+  );
+});
+
 /* ── USERNAME PERSISTENCE (for pushsubscriptionchange) ─────────────────── */
 // The main app sends the username to the SW via postMessage after subscribing.
 // We persist it in the Cache API (survives SW restarts, unlike global vars).
@@ -187,9 +206,66 @@ self.addEventListener('pushsubscriptionchange', (event) => {
   );
 });
 
-/* ── ACTIVATE (take immediate control) ───────────────────────────────────── */
+/* ── ACTIVATE (take immediate control & clean old caches) ─────────────────── */
 self.addEventListener('activate', (event) => {
-  event.waitUntil(clients.claim());
+  event.waitUntil(
+    Promise.all([
+      clients.claim(),
+      caches.keys().then((keys) => {
+        return Promise.all(
+          keys.map((key) => {
+            if (key !== CACHE_NAME) {
+              console.log('[NexaLink SW] Cleaning up old cache version:', key);
+              return caches.delete(key);
+            }
+          })
+        );
+      })
+    ])
+  );
 });
 
-console.log('[NexaLink SW] Service worker loaded — Web Push ready');
+/* ── OFFLINE INTERACTION & RUNTIME FETCH CACHING ──────────────────────────── */
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+
+  const url = new URL(event.request.url);
+
+  // Bypass caching for real-time WebSocket connection channels and backends
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.pathname.includes('/socket.io') ||
+    url.host.includes('supabase') ||
+    url.pathname.startsWith('/health') ||
+    url.pathname.includes('vapid')
+  ) {
+    return;
+  }
+
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        // Cache dynamic runtime GET assets for future offline capability
+        if (response && response.status === 200 && response.type === 'basic') {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return response;
+      })
+      .catch(() => {
+        // Return cache match, or fall back to /index.html for client-side routing
+        return caches.match(event.request).then((cachedResponse) => {
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+          if (event.request.mode === 'navigate') {
+            return caches.match('/index.html');
+          }
+        });
+      })
+  );
+});
+
+console.log('[NexaLink SW] Service worker loaded — Web Push & Offline Support ready');
