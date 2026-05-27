@@ -481,6 +481,11 @@ export default function App() {
     return saved !== 'false'; // default to true
   });
 
+  const [pipIncludeSidebar, setPipIncludeSidebar] = useState<boolean>(() => {
+    const saved = sessionStorage.getItem('nexalink_pip_include_sidebar');
+    return saved === 'true'; // default to false
+  });
+
   useEffect(() => {
     if (theme === 'light') {
       document.documentElement.classList.add('light-mode');
@@ -502,6 +507,10 @@ export default function App() {
   useEffect(() => {
     sessionStorage.setItem('nexalink_auto_pip', String(autoPipEnabled));
   }, [autoPipEnabled]);
+
+  useEffect(() => {
+    sessionStorage.setItem('nexalink_pip_include_sidebar', String(pipIncludeSidebar));
+  }, [pipIncludeSidebar]);
 
   const isElectron = typeof window !== 'undefined' && (window.navigator.userAgent.toLowerCase().includes('electron') || (window as any).process?.versions?.electron !== undefined);
   const isNotificationGranted = notifPermission === 'granted';
@@ -2681,6 +2690,7 @@ export default function App() {
   const videoFitClass = fitMode === 'cover' ? 'object-cover' : 'object-contain bg-slate-950';
 
   const totalVisibleTiles = (!isSelfHidden ? 1 : 0) + orderedParticipants.length + (screenStream ? 1 : 0);
+  const shouldHideSidebar = inRoom && isPipActive && !pipIncludeSidebar;
 
   /* ── Unified settings render helper ──── */
   const renderSettingsArea = () => {
@@ -2854,6 +2864,22 @@ export default function App() {
                     type="checkbox" 
                     checked={autoPipEnabled} 
                     onChange={e => setAutoPipEnabled(e.target.checked)} 
+                  />
+                  <span className="nx-toggle-track" />
+                  <span className="nx-toggle-thumb" />
+                </label>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-2xs font-bold text-white">Include Sidebar during PiP Mode</p>
+                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">Show the in-app chat & participants sidebar inside the main browser window when PiP is active</p>
+                </div>
+                <label className="nx-toggle">
+                  <input 
+                    type="checkbox" 
+                    checked={pipIncludeSidebar} 
+                    onChange={e => setPipIncludeSidebar(e.target.checked)} 
                   />
                   <span className="nx-toggle-track" />
                   <span className="nx-toggle-thumb" />
@@ -5364,12 +5390,13 @@ export default function App() {
               className="w-1.5 hover:w-2 bg-slate-200/10 hover:bg-indigo-500/20 cursor-col-resize transition-all duration-150 relative z-30 self-stretch flex items-center justify-center border-l border-r border-white/5"
               onMouseDown={startResizing}
               title="Drag to resize sidebar"
+              style={shouldHideSidebar ? { display: 'none' } : {}}
             >
               <div className="w-0.5 h-8 rounded bg-slate-400 opacity-40 group-hover:opacity-100" />
             </div>
 
             {/* ── RIGHT: SIDEBAR ─── */}
-            <aside className="flex flex-col overflow-hidden call-sidebar" style={{ width: sidebarWidth }}>
+            <aside className="flex flex-col overflow-hidden call-sidebar" style={shouldHideSidebar ? { display: 'none' } : { width: sidebarWidth }}>
 
               {/* Tab bar */}
               <div className="flex border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
