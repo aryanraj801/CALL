@@ -522,6 +522,7 @@ export default function App() {
     };
   }, []);
   const handleEnableNotifications = async () => {
+    setShowPwaInstallGuide(true);
     await requestPermission(userName);
     setNotifPermission('Notification' in window ? Notification.permission : 'unsupported');
   };
