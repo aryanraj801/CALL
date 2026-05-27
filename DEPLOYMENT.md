@@ -93,3 +93,60 @@ To perform regression testing or confirm that local changes are ready for automa
 ## 🏁 Auto-Deployment Pipelines
 All three hosting platforms (**Vercel** and **Render**) are directly integrated with your GitHub repository `main` branch. 
 * Any commit pushed to the remote repository (`git push origin main`) will automatically trigger parallel build and redeploy processes, keeping your cloud instances completely updated without manual intervention!
+
+---
+
+## 👣 Chronological Step-by-Step Deployment Guide
+
+Here is the exact chronicle of the steps taken to successfully deploy the NexaLink stack to the cloud:
+
+### Step 1: Deploying the Backend API Server on Render
+1. Went to the **Render Dashboard** &rarr; clicked **New +** &rarr; selected **Web Service**.
+2. Linked the GitHub repository `CALL`.
+3. Configured the main settings:
+   * **Name**: `nexalink-backend`
+   * **Root Directory**: `server`
+   * **Runtime**: `Python 3`
+   * **Build Command**: `pip install -r requirements.txt`
+   * **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   * **Instance Type**: Selected **Free** ($0/month).
+4. Clicked **Add from .env** and pasted all the environment variables (including database transaction pooler URLs, Supabase credentials, and JWT keys).
+5. Configured `CORS_ORIGINS` to allow `https://my-call-app-pi.vercel.app` (your production frontend).
+6. Clicked **Deploy Web Service** and verified that the service compiled successfully, generating the URL: `https://nexalink-backend-xjx6.onrender.com`.
+
+### Step 2: Deploying the Signalling WebSocket Server on Render
+1. Clicked **New +** &rarr; selected **Web Service** on the Render dashboard.
+2. Selected the same `CALL` repository.
+3. Configured the signalling settings:
+   * **Name**: `nexalink-signalling`
+   * **Root Directory**: `signalling`
+   * **Runtime**: `Node`
+   * **Build Command**: `npm install`
+   * **Start Command**: `node server.js`
+   * **Instance Type**: Selected **Free** ($0/month).
+4. Populated all WebSocket environment variables (`PORT`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `ALLOWED_ORIGIN` pointing strictly to your frontend Vercel URL).
+5. Clicked **Deploy Web Service** and verified that the signalling server went live, generating the URL: `https://nexalink-signalling.onrender.com`.
+
+### Step 3: Deploying & Connecting the Frontend Client on Vercel
+1. Logged into the **Vercel Dashboard** and selected the React project.
+2. Configured directory path settings:
+   * Navigated to **Settings &rarr; Build and Deployment**.
+   * Changed the **Framework Preset** from `Other` to **`Vite`** (configuring build output directly to `dist`).
+   * Set the **Root Directory** option strictly to **`client`** (so it builds inside the `/client` subdirectory).
+   * Clicked **Save**.
+3. Saved the Environment Variables:
+   * Clicked the **Environment Variables** tab in the main left sidebar of your Vercel project dashboard.
+   * Added `VITE_API_URL` &rarr; `https://nexalink-backend-xjx6.onrender.com`.
+   * Added `VITE_WS_URL` &rarr; `https://nexalink-signalling.onrender.com`.
+   * **Crucial Scope Selection**: Clicked **Edit** and checked **`Production`** and **`Preview`** (as well as `Development`) to ensure Vercel makes them available during the cloud build phase!
+   * Clicked **Save**.
+4. Built and deployed the client:
+   * Navigated to the **Deployments** tab.
+   * Clicked the three dots `...` next to the top deployment and clicked **Redeploy** to compile the React client with the correct environment variables.
+
+### Step 4: Verification & Handshake Handover
+1. Verified that the backend was awake and healthy by visiting the REST health check:
+   `https://nexalink-backend-xjx6.onrender.com/api/health` (which returned the status: `"ONLINE"`).
+2. Opened your production Vercel link: `https://my-call-app-pi.vercel.app`.
+3. Logged in successfully, verifying a successful authentication token handshake!
+
