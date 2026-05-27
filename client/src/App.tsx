@@ -8,7 +8,7 @@ import {
   AlertTriangle, Headphones, Copy, PhoneCall,
   LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Paperclip,
   Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard,
-  Bell, Download
+  Bell, Download, Trash
 } from 'lucide-react';
 import { useWebRTC, Participant } from './hooks/useWebRTC.ts';
 import { useAudioPipeline } from './hooks/useAudioPipeline.ts';
@@ -17,6 +17,7 @@ import Whiteboard from './components/Whiteboard.tsx';
 import ChaperoneOverlay from './components/ChaperoneOverlay.tsx';
 
 const API = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8001';
+const WS_URL = (import.meta as any).env?.VITE_WS_URL || 'http://localhost:8000';
 
 /* ─────────────────────────────────────────
    Types
@@ -413,6 +414,10 @@ export default function App() {
   }, [lobbySubView]);
 
   const [lobbyChats, setLobbyChats] = useState<{ [contactId: string]: ChatMessage[] }>({});
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
+  const [notificationLogs, setNotificationLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const [lobbyChatInput, setLobbyChatInput] = useState('');
   const [showInboxDropdown, setShowInboxDropdown] = useState(false);
   const [unreadChatCounts, setUnreadChatCounts] = useState<{ [username: string]: number }>({});
@@ -489,8 +494,9 @@ export default function App() {
     sessionStorage.setItem('nexalink_notif_settings', JSON.stringify(notifSettings));
   }, [notifSettings]);
 
+  const isElectron = typeof window !== 'undefined' && (window.navigator.userAgent.toLowerCase().includes('electron') || (window as any).process?.versions?.electron !== undefined);
   const isNotificationGranted = notifPermission === 'granted';
-  const isPwaReady = isStandalone && isNotificationGranted;
+  const isPwaReady = isElectron || isStandalone || isNotificationGranted;
 
   // Global 401 Unauthorized API interceptor
   useEffect(() => {
@@ -586,6 +592,181 @@ export default function App() {
       showToast("Failed to deliver message.", "error");
     }
   };
+
+  const saveMessageEdit = async (messageId: string, contactUsername: string) => {
+    if (!editingText.trim()) return;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/dm/edit/${messageId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ text: editingText.trim() })
+      });
+      if (res.ok) {
+        setLobbyChats(prev => {
+          const chatHistory = prev[contactUsername] || [];
+          const updatedHistory = chatHistory.map(m => {
+            if (m.id === messageId) {
+              return { ...m, text: editingText.trim() };
+            }
+            return m;
+          });
+          return {
+            ...prev,
+            [contactUsername]: updatedHistory
+          };
+        });
+        
+        if (socket) {
+          socket.emit('direct_message_edit', {
+            targetUsername: contactUsername,
+            messageId,
+            text: editingText.trim(),
+            senderUsername: userName
+          });
+        }
+        
+        setEditingMessageId(null);
+        setEditingText('');
+        showToast("Message updated.", "success");
+      } else {
+        throw new Error("Failed to edit message");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to edit message.", "error");
+    }
+  };
+
+  const deleteMessage = async (messageId: string, contactUsername: string) => {
+    if (!window.confirm("Are you sure you want to delete this message?")) return;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/dm/delete/${messageId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setLobbyChats(prev => {
+          const chatHistory = prev[contactUsername] || [];
+          const updatedHistory = chatHistory.filter(m => m.id !== messageId);
+          return {
+            ...prev,
+            [contactUsername]: updatedHistory
+          };
+        });
+        
+        if (socket) {
+          socket.emit('direct_message_delete', {
+            targetUsername: contactUsername,
+            messageId,
+            senderUsername: userName
+          });
+        }
+        
+        showToast("Message deleted.", "success");
+      } else {
+        throw new Error("Failed to delete message");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to delete message.", "error");
+    }
+  };
+
+  const clearAllCallHistory = async () => {
+    if (!window.confirm("Are you sure you want to clear all call history?")) return;
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/calls/clear`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        showToast("Call history cleared successfully.", "success");
+        setCallHistory([]);
+      } else {
+        throw new Error("Failed to clear call history");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to clear call history.", "error");
+    }
+  };
+
+  const deleteCallHistoryEntry = async (callId: number) => {
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/calls/delete/${callId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setCallHistory(prev => prev.filter(c => c.id !== callId));
+        showToast("Call log removed.", "success");
+      } else {
+        throw new Error("Failed to delete call log");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Failed to delete call log.", "error");
+    }
+  };
+
+  const fetchNotificationLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const token = sessionStorage.getItem('nexalink_token') || authToken;
+      const res = await fetch(`${API}/api/compliance/notification_logs`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setNotificationLogs(data);
+      }
+    } catch (err) {
+      console.error("Failed to load notification audit logs:", err);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const triggerTestNotification = async () => {
+    showToast("E2E diagnostics push triggered. Testing routing tunnel...", "info");
+    try {
+      const res = await fetch(`${WS_URL}/api/push/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: userName })
+      });
+      if (res.ok) {
+        showToast("Test request sent! Check for OS notification.", "success");
+        setTimeout(fetchNotificationLogs, 1500);
+      } else {
+        throw new Error("Diagnostics endpoint returned error");
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Push test failed to initiate.", "error");
+    }
+  };
+
+  useEffect(() => {
+    if (authToken && currentView === 'lobby') {
+      fetchNotificationLogs();
+    }
+  }, [authToken, currentView]);
+
+  useEffect(() => {
+    if (userName && userName !== 'Alice') {
+      document.title = `NexaLink - ${userName}`;
+    } else {
+      document.title = 'NexaLink';
+    }
+  }, [userName]);
 
   const loadContactsFromServer = async () => {
     const token = sessionStorage.getItem('nexalink_token') || authToken;
@@ -1988,6 +2169,35 @@ export default function App() {
       }
     };
 
+    const handleDirectMessageEdit = (data: { messageId: string; text: string; senderUsername: string }) => {
+      const { messageId, text, senderUsername } = data;
+      setLobbyChats(prev => {
+        const chatHistory = prev[senderUsername] || [];
+        const updatedHistory = chatHistory.map(m => {
+          if (m.id === messageId) {
+            return { ...m, text };
+          }
+          return m;
+        });
+        return {
+          ...prev,
+          [senderUsername]: updatedHistory
+        };
+      });
+    };
+
+    const handleDirectMessageDelete = (data: { messageId: string; senderUsername: string }) => {
+      const { messageId, senderUsername } = data;
+      setLobbyChats(prev => {
+        const chatHistory = prev[senderUsername] || [];
+        const updatedHistory = chatHistory.filter(m => m.id !== messageId);
+        return {
+          ...prev,
+          [senderUsername]: updatedHistory
+        };
+      });
+    };
+
     const handleContactAddedNotification = (data: { addedBy: string }) => {
       showToast(`${data.addedBy} added you as a contact!`, 'success');
       loadContactsFromServer();
@@ -2149,6 +2359,8 @@ export default function App() {
     socket.on('call_cancelled', handleCallCancelled);
     socket.on('call_response', handleCallResponseEvent);
     socket.on('direct_message', handleDirectMessage);
+    socket.on('direct_message_edit', handleDirectMessageEdit);
+    socket.on('direct_message_delete', handleDirectMessageDelete);
     socket.on('contact_added_notification', handleContactAddedNotification);
     socket.on('file_transfer_request', handleFileTransferRequest);
     socket.on('file_transfer_response', handleFileTransferResponseEvent);
@@ -2162,6 +2374,8 @@ export default function App() {
       socket.off('call_cancelled', handleCallCancelled);
       socket.off('call_response', handleCallResponseEvent);
       socket.off('direct_message', handleDirectMessage);
+      socket.off('direct_message_edit', handleDirectMessageEdit);
+      socket.off('direct_message_delete', handleDirectMessageDelete);
       socket.off('contact_added_notification', handleContactAddedNotification);
       socket.off('file_transfer_request', handleFileTransferRequest);
       socket.off('file_transfer_response', handleFileTransferResponseEvent);
@@ -2526,6 +2740,69 @@ export default function App() {
                   <span className="nx-toggle-track" />
                   <span className="nx-toggle-thumb" />
                 </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Subcard D: Offline Notification Diagnostics & Audits */}
+          <div className="glass-card rounded-3xl p-6 flex flex-col gap-4 border border-white/5">
+            <div className="flex items-center justify-between pb-2 border-b border-white/5">
+              <div className="flex items-center gap-2">
+                <Bell className="w-4 h-4 text-rose-400" />
+                <h3 className="text-sm font-bold text-white font-display">Offline Diagnostics</h3>
+              </div>
+              <button 
+                onClick={fetchNotificationLogs} 
+                className="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold transition"
+                disabled={loadingLogs}
+              >
+                {loadingLogs ? 'Refreshing...' : 'Refresh Logs'}
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <p className="text-[10px] text-slate-400 leading-relaxed font-mono">
+                Troubleshoot browser Web Push (VAPID) delivery failures across different active profiles or Comet sessions in real-time.
+              </p>
+
+              <button 
+                onClick={triggerTestNotification}
+                className="nx-btn nx-btn-primary text-3xs font-semibold py-2 w-full flex items-center justify-center gap-1.5"
+              >
+                <Zap className="w-3.5 h-3.5" /> Trigger E2E Test Notification
+              </button>
+
+              <div className="flex flex-col gap-2 mt-2 max-h-[220px] overflow-y-auto pr-1">
+                <p className="text-[9px] uppercase tracking-wider text-slate-500 font-bold mb-1 font-mono">Recent Audits</p>
+                {notificationLogs.length === 0 ? (
+                  <p className="text-3xs text-slate-600 italic py-2 text-center font-mono">No logs audited yet. Trigger a test push above.</p>
+                ) : (
+                  notificationLogs.map((log: any) => {
+                    const statusColor = 
+                      log.status === 'delivered' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
+                      log.status === 'no_subscription' ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' :
+                      'text-rose-400 bg-rose-500/10 border-rose-500/20';
+                    const dateStr = new Date(log.created_at).toLocaleString('en-IN', {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit'
+                    });
+                    return (
+                      <div key={log.id} className="p-2.5 rounded-xl border border-white/5 bg-white/2 flex flex-col gap-1 text-left">
+                        <div className="flex items-center justify-between">
+                          <span className="text-3xs font-bold text-white capitalize font-mono">{log.notification_type} Push</span>
+                          <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-md border ${statusColor}`}>
+                            {log.status === 'no_subscription' ? 'no subscription' : log.status}
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-slate-400 leading-normal font-mono mt-0.5">{log.error_details || 'Successfully delivered to push service.'}</p>
+                        <span className="text-[8px] text-slate-600 mt-1 self-end font-mono">{dateStr}</span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -3948,9 +4225,20 @@ export default function App() {
                           Call History
                         </button>
                       </div>
-                      <span className="nx-badge nx-badge-indigo">
-                        {sidebarTab === 'contacts' ? contacts.length : callHistory.length}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="nx-badge nx-badge-indigo">
+                          {sidebarTab === 'contacts' ? contacts.length : callHistory.length}
+                        </span>
+                        {sidebarTab === 'calls' && callHistory.length > 0 && (
+                          <button 
+                            onClick={clearAllCallHistory}
+                            className="text-[9px] text-rose-400 hover:text-rose-300 font-bold bg-rose-500/10 px-2 py-0.5 rounded-md hover:bg-rose-500/20 transition-all duration-200"
+                            title="Clear Call History"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     {sidebarTab === 'contacts' ? (
@@ -4069,16 +4357,25 @@ export default function App() {
                                 </div>
                                 
                                 <div className="flex flex-col items-end gap-1">
-                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
-                                    call.status === 'accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                                    call.status === 'declined' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                                    'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                                  }`}>
-                                    {call.status}
-                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                                      call.status === 'accepted' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                      call.status === 'declined' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                                      'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                                    }`}>
+                                      {call.status}
+                                    </span>
+                                    <button 
+                                      onClick={() => deleteCallHistoryEntry(call.id)}
+                                      className="text-slate-600 hover:text-rose-400 transition-all p-0.5"
+                                      title="Delete Log"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
                                   <button 
                                     onClick={() => callContact(peerName)}
-                                    className="text-indigo-400 hover:text-indigo-300 text-[10px] font-semibold"
+                                    className="text-indigo-400 hover:text-indigo-300 text-[10px] font-semibold pr-1"
                                   >
                                     Call
                                   </button>
@@ -4260,13 +4557,72 @@ export default function App() {
                               <p className="text-3xs text-slate-400">Establish connection. Send a direct message.</p>
                             </div>
                           ) : (
-                            (lobbyChats[activeChatContact.username] || []).map(m => (
-                              <div key={m.id} className={`chat-bubble ${m.self ? 'self' : 'remote'}`}>
-                                <span className="sender">{m.self ? 'You' : m.sender}</span>
-                                <div className="bubble">{m.text}</div>
-                                <span className="time">{m.time}</span>
-                              </div>
-                            ))
+                            (lobbyChats[activeChatContact.username] || []).map(m => {
+                              const isEditing = editingMessageId === m.id;
+                              return (
+                                <div key={m.id} className={`chat-bubble ${m.self ? 'self' : 'remote'} group relative`}>
+                                  <span className="sender">{m.self ? 'You' : m.sender}</span>
+                                  
+                                  {isEditing ? (
+                                    <div className="flex flex-col gap-2 mt-1 w-full min-w-[200px] text-left">
+                                      <input 
+                                        type="text"
+                                        value={editingText}
+                                        onChange={e => setEditingText(e.target.value)}
+                                        onKeyDown={e => {
+                                          if (e.key === 'Enter') saveMessageEdit(m.id, activeChatContact.username);
+                                          if (e.key === 'Escape') setEditingMessageId(null);
+                                        }}
+                                        className="nx-input text-xs w-full bg-slate-900 border-indigo-500/50 text-white"
+                                        autoFocus
+                                      />
+                                      <div className="flex gap-2 justify-end">
+                                        <button 
+                                          onClick={() => setEditingMessageId(null)}
+                                          className="text-[9px] text-slate-400 hover:text-white px-2 py-1 bg-white/5 rounded-lg transition"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button 
+                                          onClick={() => saveMessageEdit(m.id, activeChatContact.username)}
+                                          className="text-[9px] text-indigo-300 hover:text-white px-2 py-1 bg-indigo-600/30 hover:bg-indigo-600/50 rounded-lg transition"
+                                        >
+                                          Save
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="bubble flex items-start justify-between gap-3">
+                                        <span>{m.text}</span>
+                                        {m.self && (
+                                          <div className="opacity-0 group-hover:opacity-100 transition-all duration-200 flex gap-1.5 self-center ml-2 bg-slate-950/60 p-1 rounded-lg backdrop-blur-sm">
+                                            <button 
+                                              onClick={() => {
+                                                setEditingMessageId(m.id);
+                                                setEditingText(m.text);
+                                              }}
+                                              className="text-slate-400 hover:text-indigo-400 p-0.5"
+                                              title="Edit Message"
+                                            >
+                                              <Edit2 className="w-3 h-3" />
+                                            </button>
+                                            <button 
+                                              onClick={() => deleteMessage(m.id, activeChatContact.username)}
+                                              className="text-slate-400 hover:text-rose-400 p-0.5"
+                                              title="Delete Message"
+                                            >
+                                              <Trash className="w-3 h-3" />
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <span className="time">{m.time}</span>
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })
                           )}
                         </div>
 

@@ -475,3 +475,46 @@ def update_file_transfer_status_db(transfer_id: int, status: str):
     url = f"{SUPABASE_URL}/rest/v1/file_transfers?id=eq.{int(transfer_id)}"
     return _http_request(url, "PATCH", payload)
 
+
+# 26. Edit a direct message (only if sender matches)
+def edit_direct_message_db(message_id: int, username: str, new_text: str):
+    safe_id = urllib.parse.quote(str(message_id), safe='')
+    safe_sender = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/direct_messages?id=eq.{safe_id}&sender=eq.{safe_sender}"
+    payload = {
+        "text": new_text[:4000]
+    }
+    res = _http_request(url, "PATCH", payload)
+    return res[0] if res else None
+
+
+# 27. Delete a direct message (only if sender matches)
+def delete_direct_message_db(message_id: int, username: str):
+    safe_id = urllib.parse.quote(str(message_id), safe='')
+    safe_sender = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/direct_messages?id=eq.{safe_id}&sender=eq.{safe_sender}"
+    return _http_request(url, "DELETE")
+
+
+# 28. Delete a specific direct call log (only if user is caller or callee)
+def delete_direct_call_log_db(call_id: int, username: str):
+    safe_id = urllib.parse.quote(str(call_id), safe='')
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/direct_call_logs?id=eq.{safe_id}&or=(caller.eq.{safe_user},callee.eq.{safe_user})"
+    return _http_request(url, "DELETE")
+
+
+# 29. Clear all direct call history for a user (as caller or callee)
+def clear_all_direct_call_logs_db(username: str):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/direct_call_logs?or=(caller.eq.{safe_user},callee.eq.{safe_user})"
+    return _http_request(url, "DELETE")
+
+
+# 30. Retrieve notification logs for compliance/monitoring
+def get_notification_logs_db(username: str, limit: int = 50):
+    safe_user = urllib.parse.quote(str(username), safe='')
+    url = f"{SUPABASE_URL}/rest/v1/notification_logs?username=eq.{safe_user}&order=created_at.desc&limit={int(limit)}"
+    return _http_request(url, "GET")
+
+

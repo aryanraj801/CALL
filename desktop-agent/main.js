@@ -12,9 +12,37 @@ let isQuitting = false;
 
 const iconPath = path.join(__dirname, 'icon.png');
 
-function getAppIcon() {
+function getTrayIcon() {
   if (fs.existsSync(iconPath)) {
-    return iconPath;
+    try {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) {
+        return img.resize({ width: 16, height: 16 });
+      }
+    } catch (err) {
+      console.error('[Desktop Agent] Failed to parse icon.png for tray:', err);
+    }
+  }
+
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+      <rect width="16" height="16" rx="4" fill="#111827"/>
+      <path d="M4 12V4h2l3 4V4h2v8H9L6 8v4z" fill="#818cf8"/>
+    </svg>
+  `;
+  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
+}
+
+function getWindowIcon() {
+  if (fs.existsSync(iconPath)) {
+    try {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) {
+        return img.resize({ width: 256, height: 256 });
+      }
+    } catch (err) {
+      console.error('[Desktop Agent] Failed to parse icon.png for window:', err);
+    }
   }
 
   const svg = `
@@ -28,39 +56,48 @@ function getAppIcon() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 480,
-    height: 380,
-    show: false,
-    title: 'NexaLink Desktop Agent',
-    icon: getAppIcon(),
+    width: 1280,
+    height: 800,
+    show: true, // Show window directly on startup for premium desktop experience
+    title: 'NexaLink',
+    icon: getWindowIcon(),
     backgroundColor: '#060813',
     webPreferences: {
       // SEC-07 FIX: NEVER enable nodeIntegration in a renderer that loads
       // any remote or user-generated content. This is the #1 Electron CVE.
-      // With nodeIntegration: true + contextIsolation: false, any XSS in the
-      // renderer gets full Node.js/OS access (file read, spawn, net).
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: false,
-      // Prevent navigation to external URLs from within the renderer
       webviewTag: false,
     },
   });
 
-  // Load the visual status check dashboard
-  const dashboardPath = path.join(__dirname, 'dashboard.html');
-  mainWindow.loadFile(dashboardPath).catch((err) => {
-    console.error('[Desktop Agent] Failed to load dashboard:', err.message);
+  // Try to load the live React client on port 3000, fallback to status diagnostics on fail
+  mainWindow.loadURL('http://localhost:3000').catch((err) => {
+    console.log('[Desktop Agent] NexaLink Web Client not running on port 3000. Loading fallback diagnostics dashboard.');
+    mainWindow.setBounds({ width: 480, height: 380 });
+    const dashboardPath = path.join(__dirname, 'dashboard.html');
+    mainWindow.loadFile(dashboardPath).catch((e) => {
+      console.error('[Desktop Agent] Failed to load offline dashboard:', e.message);
+    });
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, code, description) => {
-    console.error(`[Desktop Agent] Dashboard load failed (${code}): ${description}`);
+    console.warn(`[Desktop Agent] Load failed (${code}): ${description}`);
   });
 
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
+    }
+  });
+
+  mainWindow.on('page-title-updated', (event, title) => {
+    // Keep tray tooltip in sync with page title (showing current logged in user)
+    if (tray) {
+      const safeTitle = typeof title === 'string' ? title.slice(0, 120) : 'NexaLink';
+      tray.setToolTip(safeTitle);
     }
   });
 
@@ -71,15 +108,15 @@ function createWindow() {
 
 // Setup background system trays and context menus
 function setupTray() {
-  tray = new Tray(getAppIcon());
+  tray = new Tray(getTrayIcon());
   updateTrayMenu();
-  tray.setToolTip('NexaLink Desktop Control Agent');
+  tray.setToolTip('NexaLink');
 }
 
 function updateTrayMenu() {
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Open NexaLink Dashboard',
+      label: 'Open NexaLink',
       click: () => {
         if (mainWindow) {
           mainWindow.show();

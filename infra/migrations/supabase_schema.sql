@@ -210,3 +210,21 @@ ALTER TABLE public.file_transfers ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow file transfers access" ON public.file_transfers;
 CREATE POLICY "Allow file transfers access" ON public.file_transfers FOR ALL USING (true);
 
+
+-- 11. Notification Audit & Diagnostics Logs
+CREATE TABLE IF NOT EXISTS public.notification_logs (
+    id BIGSERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL,
+    notification_type VARCHAR(20) NOT NULL, -- 'chat' | 'call' | 'file_transfer'
+    status VARCHAR(20) NOT NULL,            -- 'delivered' | 'failed' | 'no_subscription'
+    error_details TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_logs_user ON public.notification_logs(username, created_at DESC);
+
+ALTER TABLE public.notification_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow notification logs access" ON public.notification_logs;
+CREATE POLICY "Allow notification logs access" ON public.notification_logs FOR ALL USING (true);
+
+

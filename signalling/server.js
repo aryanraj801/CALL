@@ -82,11 +82,42 @@ loadPushSubscriptions();
  *   5xx       → push service temporarily down (try again later)
  *   401 / 403 → VAPID auth issue (log, but subscription may still be valid)
  */
+async function logPushAttempt(username, type, status, errorDetails = '') {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
+    console.warn('[WebPush Audit] Supabase credentials missing — cannot log push attempt');
+    return;
+  }
+  const url = `${process.env.SUPABASE_URL.trim()}/rest/v1/notification_logs`;
+  const headers = {
+    'apikey': process.env.SUPABASE_ANON_KEY.trim(),
+    'Authorization': `Bearer ${process.env.SUPABASE_ANON_KEY.trim()}`,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=representation'
+  };
+  const payload = {
+    username: username,
+    notification_type: type,
+    status: status,
+    error_details: errorDetails.slice(0, 1000),
+    created_at: new Date().toISOString()
+  };
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.error('[WebPush Audit] Failed to log push attempt:', err.message);
+  }
+}
+
 async function sendPush(targetUsername, payload) {
   const key = targetUsername?.toLowerCase();
   const subs = pushSubscriptions[key];
   if (!subs) {
     console.log(`[WebPush] No subscription found for <${targetUsername}> — cannot deliver`);
+    logPushAttempt(targetUsername, payload.type || 'update', 'no_subscription', 'No active subscription endpoint registered in memory.');
     return { delivered: false, noSubscription: true };
   }
 
@@ -94,6 +125,7 @@ async function sendPush(targetUsername, payload) {
   const subArray = Array.isArray(subs) ? subs : [subs];
   if (subArray.length === 0) {
     console.log(`[WebPush] Empty subscription array for <${targetUsername}> — cannot deliver`);
+    logPushAttempt(targetUsername, payload.type || 'update', 'no_subscription', 'Empty subscription endpoints array registered in memory.');
     return { delivered: false, noSubscription: true };
   }
 
@@ -106,6 +138,7 @@ async function sendPush(targetUsername, payload) {
       const result = await webpush.sendNotification(sub, JSON.stringify(payload));
       console.log(`[WebPush] ✔ Push accepted by push service for <${targetUsername}> endpoint #${idx + 1} (status: ${result.statusCode})`);
       deliveredCount++;
+      logPushAttempt(targetUsername, payload.type || 'update', 'delivered', `Accepted by push service endpoint #${idx + 1} with status: ${result.statusCode}`);
       return { expired: false, delivered: true };
     } catch (err) {
       const status = err.statusCode || 0;
@@ -114,16 +147,19 @@ async function sendPush(targetUsername, payload) {
       if (status === 410 || status === 404) {
         // Subscription is permanently gone — clean up
         console.log(`[WebPush] ✖ Endpoint #${idx + 1} for <${targetUsername}> expired (${status}) — removing`);
+        logPushAttempt(targetUsername, payload.type || 'update', 'failed', `Subscription expired/gone at endpoint #${idx + 1} (status: ${status}).`);
         return { expired: true, delivered: false, endpoint: sub.endpoint };
       } else if (status === 429) {
         // Rate limited — push service received it but is throttling; treat as delivered
         console.warn(`[WebPush] ⚠ Endpoint #${idx + 1} for <${targetUsername}> rate-limited (429) — message likely queued`);
         deliveredCount++;
+        logPushAttempt(targetUsername, payload.type || 'update', 'delivered', `Warning: Push service rate limited (429) at endpoint #${idx + 1}, message likely queued.`);
         return { expired: false, delivered: true };
       } else if (status >= 500) {
         // Push service temporarily down — not the user's fault; treat as delivered (optimistic)
         console.warn(`[WebPush] ⚠ Endpoint #${idx + 1} for <${targetUsername}> push service error (${status}) — may retry`);
         deliveredCount++;
+        logPushAttempt(targetUsername, payload.type || 'update', 'delivered', `Warning: Push service down (status: ${status}) at endpoint #${idx + 1}, message may retry.`);
         return { expired: false, delivered: true };
       } else {
         // 401, 403, network errors, etc — log full details for debugging
@@ -131,6 +167,7 @@ async function sendPush(targetUsername, payload) {
           `status=${status}`, `message=${err.message}`, `body=${body}`,
           `endpoint=${sub.endpoint?.slice(0, 80)}...`
         );
+        logPushAttempt(targetUsername, payload.type || 'update', 'failed', `Error: ${err.message || 'unknown'} (status: ${status}) at endpoint #${idx + 1}. Body: ${body.slice(0, 200)}`);
         return { expired: false, delivered: false };
       }
     }
@@ -239,6 +276,21 @@ app.delete('/api/push/subscribe', (req, res) => {
     console.log(`[WebPush] Unsubscribed active session for <${key}>`);
   }
   res.json({ ok: true });
+});
+
+/** Manual E2E push routing diagnostics endpoint */
+app.post('/api/push/test', async (req, res) => {
+  const { username } = req.body || {};
+  if (!username) {
+    return res.status(400).json({ error: 'username required' });
+  }
+  console.log(`[WebPush Audit] Manual push diagnostics test triggered for <${username}>`);
+  const pushResult = await sendPush(username, {
+    type: 'update',
+    sender: 'Diagnostic Agent',
+    body: 'NexaLink E2E Diagnostics Alert: Success! Offline push notifications are 100% active.'
+  });
+  res.json({ ok: true, result: pushResult });
 });
 
 const httpServer = createServer(app);
@@ -741,6 +793,26 @@ io.on('connection', (socket) => {
         sender: displaySender,
         body: text.slice(0, 120),
       });
+    }
+  });
+
+  socket.on('direct_message_edit', ({ targetUsername, messageId, text, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('direct_message_edit', { messageId, text, senderUsername });
+      console.log(`[Presence] Message edit relayed to ${targetUsername}`);
+    }
+  });
+
+  socket.on('direct_message_delete', ({ targetUsername, messageId, senderUsername }) => {
+    if (typeof targetUsername !== 'string') return;
+    const key = targetUsername.trim().toLowerCase();
+    const targetSocketId = onlineUsers[key];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('direct_message_delete', { messageId, senderUsername });
+      console.log(`[Presence] Message delete relayed to ${targetUsername}`);
     }
   });
 

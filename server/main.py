@@ -46,6 +46,11 @@ from db.supabase_api import (
     create_file_transfer_db,
     get_pending_file_transfers_db,
     update_file_transfer_status_db,
+    edit_direct_message_db,
+    delete_direct_message_db,
+    delete_direct_call_log_db,
+    clear_all_direct_call_logs_db,
+    get_notification_logs_db,
 )
 
 # --- Configuration ---
@@ -229,6 +234,10 @@ class ProfileSaveSchema(BaseModel):
 
 class DirectMessageSend(BaseModel):
     recipient: str = Field(..., min_length=1, max_length=50)
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+class DirectMessageEdit(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
 
 
@@ -704,3 +713,86 @@ def respond_to_file_transfer(transfer_id: int, data: FileTransferResponse, curre
         return {"status": "SUCCESS", "transfer": transfer}
     except Exception as e:
         raise _safe_error(e, "Failed to respond to file transfer.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MESSAGES EDIT AND DELETE ENDPOINTS
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.put("/api/dm/edit/{message_id}")
+def edit_direct_message(message_id: int, data: DirectMessageEdit, current_user: dict = Depends(get_current_user)):
+    """Edit a direct message text (only the sender is permitted)."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        msg = edit_direct_message_db(message_id=message_id, username=username, new_text=data.text)
+        if not msg:
+            raise HTTPException(status_code=404, detail="Message not found or you are not the sender.")
+        return {"status": "SUCCESS", "message": msg}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise _safe_error(e, "Failed to edit message.")
+
+
+@app.delete("/api/dm/delete/{message_id}")
+def delete_direct_message(message_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete a direct message row (only the sender is permitted)."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        delete_direct_message_db(message_id=message_id, username=username)
+        return {"status": "SUCCESS"}
+    except Exception as e:
+        raise _safe_error(e, "Failed to delete message.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CALL HISTORY DELETION ENDPOINTS
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.delete("/api/calls/delete/{call_id}")
+def delete_call_log(call_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete a specific call history log (only if caller or callee)."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        delete_direct_call_log_db(call_id=call_id, username=username)
+        return {"status": "SUCCESS"}
+    except Exception as e:
+        raise _safe_error(e, "Failed to delete call log.")
+
+
+@app.delete("/api/calls/clear")
+def clear_all_call_logs(current_user: dict = Depends(get_current_user)):
+    """Clear all direct call history logs where the user was caller or callee."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        clear_all_direct_call_logs_db(username=username)
+        return {"status": "SUCCESS"}
+    except Exception as e:
+        raise _safe_error(e, "Failed to clear call history.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# NOTIFICATION AUDIT AND MONITORING ENDPOINTS
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/compliance/notification_logs")
+def get_notification_logs(limit: int = 50, current_user: dict = Depends(get_current_user)):
+    """Retrieve push notification diagnostic logs for compliance monitoring."""
+    username = current_user.get("username", "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token.")
+    try:
+        logs = get_notification_logs_db(username=username, limit=min(limit, 100))
+        return logs
+    except Exception as e:
+        raise _safe_error(e, "Failed to retrieve notification logs.")
+
+
