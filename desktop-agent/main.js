@@ -128,7 +128,7 @@ app.whenReady().then(() => {
   try {
     setupTray();
   } catch (err) {
-    console.log('[System Tray] Tray initialization skipped due to no native image file found.');
+    console.error('[System Tray] Tray initialization failed:', err.message || err);
   }
 
   registerGlobalHotkeys();

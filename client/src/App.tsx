@@ -489,6 +489,9 @@ export default function App() {
     sessionStorage.setItem('nexalink_notif_settings', JSON.stringify(notifSettings));
   }, [notifSettings]);
 
+  const isNotificationGranted = notifPermission === 'granted';
+  const isPwaReady = isStandalone && isNotificationGranted;
+
   // Global 401 Unauthorized API interceptor
   useEffect(() => {
     const originalFetch = window.fetch;
@@ -2548,25 +2551,53 @@ export default function App() {
             <ShieldAlert className="w-8 h-8 text-indigo-400" />
           </div>
 
-          <div>
-            <span className="nx-badge nx-badge-indigo mb-1.5 uppercase tracking-widest text-[9px]">Cryptographic Sandbox Required</span>
-            <h2 className="text-xl font-bold text-white font-display">Secure Connection Setup Required</h2>
-            <p className="text-3xs text-slate-500 mt-1 uppercase tracking-widest font-mono">E2EE Terminal Gate</p>
-          </div>
+          {isNotificationGranted ? (
+            <div>
+              <span className="nx-badge nx-badge-indigo mb-1.5 uppercase tracking-widest text-[9px]">PWA Client Required</span>
+              <h2 className="text-xl font-bold text-white font-display">Install Desktop Client</h2>
+              <p className="text-3xs text-slate-500 mt-1 uppercase tracking-widest font-mono">E2EE Terminal Gate</p>
+            </div>
+          ) : (
+            <div>
+              <span className="nx-badge nx-badge-indigo mb-1.5 uppercase tracking-widest text-[9px]">Cryptographic Sandbox Required</span>
+              <h2 className="text-xl font-bold text-white font-display">Secure Connection Setup Required</h2>
+              <p className="text-3xs text-slate-500 mt-1 uppercase tracking-widest font-mono">E2EE Terminal Gate</p>
+            </div>
+          )}
 
-          <p className="text-xs text-slate-300 leading-relaxed max-w-md mx-auto">
-            To establish military-grade secure peer-to-peer tunnels, receive offline calling requests, and prevent background notification relay leaks, NexaLink must operate within an isolated desktop sandbox.
-          </p>
+          {isNotificationGranted ? (
+            <p className="text-xs text-slate-300 leading-relaxed max-w-md mx-auto">
+              System notifications are successfully enabled for this device. To proceed to the secure E2EE connection lobby, you must now install the NexaLink PWA client application.
+            </p>
+          ) : (
+            <p className="text-xs text-slate-300 leading-relaxed max-w-md mx-auto">
+              To establish military-grade secure peer-to-peer tunnels, receive offline calling requests, and prevent background notification relay leaks, NexaLink must operate within an isolated desktop sandbox.
+            </p>
+          )}
 
           <div className="flex flex-col gap-3 max-w-sm mx-auto w-full mt-2">
-            <button
-              onClick={handleEnableNotifications}
-              className="nx-btn nx-btn-primary py-3.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 w-full shadow-lg hover:shadow-indigo-500/20 transition-all duration-300"
-            >
-              <Bell className="w-4 h-4" /> Enable Desktop Notifications
-            </button>
+            {isNotificationGranted ? (
+              <button
+                onClick={() => {
+                  setShowPwaInstallGuide(true);
+                  triggerPwaInstall();
+                }}
+                className="nx-btn nx-btn-primary py-3.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 w-full shadow-lg hover:shadow-indigo-500/20 transition-all duration-300"
+              >
+                <Download className="w-4 h-4 animate-bounce" /> Install NexaLink Client
+              </button>
+            ) : (
+              <button
+                onClick={handleEnableNotifications}
+                className="nx-btn nx-btn-primary py-3.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 w-full shadow-lg hover:shadow-indigo-500/20 transition-all duration-300"
+              >
+                <Bell className="w-4 h-4" /> Enable Desktop Notifications
+              </button>
+            )}
             <p className="text-[10px] text-slate-500 leading-normal">
-              Clicking will prompt browser background permissions and open the custom installation terminal.
+              {isNotificationGranted 
+                ? "Clicking will open the custom guide and trigger the native desktop client installation prompt."
+                : "Clicking will prompt browser background permissions and open the custom installation terminal."}
             </p>
           </div>
 
@@ -2574,7 +2605,7 @@ export default function App() {
             <span>DEVICE MATCH: OK</span>
             <span className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-ping" />
-              WAITING FOR PWA SECURE ENV...
+              {isNotificationGranted ? "AWAITING APP INSTALLATION..." : "WAITING FOR PWA SECURE ENV..."}
             </span>
           </div>
         </div>
@@ -3261,7 +3292,7 @@ export default function App() {
 
             </div>
           </div>
-        ) : (!isStandalone && currentView !== 'landing') ? (
+        ) : (!isPwaReady && currentView !== 'landing') ? (
           renderSecureSetupGate()
         ) : !inRoom ? (
           currentView === 'landing' ? (
