@@ -2201,3 +2201,38 @@ body,
   background: rgba(0, 0, 0, 0.06) !important;
 }
 
+/* ============================================================
+   WHITEBOARD HIGH-VISIBILITY CONTRAST OVERRIDES
+   ============================================================ */
+.call-sidebar .whiteboard-container .text-white,
+.call-sidebar .whiteboard-container input[type="text"],
+.call-sidebar .whiteboard-container input[type="number"],
+.call-sidebar .whiteboard-container input {
+  color: #ffffff !important;
+}
+
+.call-sidebar .whiteboard-container .text-slate-200 {
+  color: #e2e8f0 !important;
+}
+
+.call-sidebar .whiteboard-container .text-slate-300 {
+  color: #cbd5e1 !important;
+}
+
+.call-sidebar .whiteboard-container .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.call-sidebar .whiteboard-container .text-slate-500 {
+  color: #64748b !important;
+}
+
+.call-sidebar .whiteboard-container .text-slate-600 {
+  color: #475569 !important;
+}
+
+.call-sidebar .whiteboard-container input::placeholder {
+  color: #64748b !important;
+}
+
+

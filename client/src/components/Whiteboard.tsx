@@ -33,7 +33,6 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
   const [imageUrl, setImageUrl] = useState('');
   const [imageWidth, setImageWidth] = useState(200);
   const [imageHeight, setImageHeight] = useState(150);
-  const [showAnnotationDropdown, setShowAnnotationDropdown] = useState(false);
   const [isImageValid, setIsImageValid] = useState<boolean | null>(null);
   const [isImageLoading, setIsImageLoading] = useState(false);
   
@@ -563,7 +562,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
   }, [socket]);
 
   return (
-    <div className="space-y-4 relative">
+    <div className="space-y-4 relative whiteboard-container">
       
       {/* Toast Alert Indicator */}
       {toastMessage && (
@@ -609,53 +608,31 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
               <Eraser className="w-4 h-4" />
             </button>
 
-            <div className="relative">
-              <button 
-                type="button"
-                onClick={() => setShowAnnotationDropdown(prev => !prev)}
-                className={`p-2 rounded-lg transition-all duration-200 flex items-center gap-1 ${
-                  (tool === 'text' || tool === 'image')
-                    ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/20' 
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-                title="Annotation Tool Dropdown"
-              >
-                {tool === 'image' ? <Image className="w-4 h-4" /> : <Type className="w-4 h-4" />}
-                <span className="text-[8px] opacity-60">▼</span>
-              </button>
-              
-              {showAnnotationDropdown && (
-                <div className="absolute top-full left-0 mt-1 bg-slate-950/95 border border-white/10 rounded-xl p-1.5 shadow-2xl z-[150] flex flex-col gap-1 min-w-[140px] backdrop-blur-lg">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTool('text');
-                      setShowAnnotationDropdown(false);
-                    }}
-                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition ${
-                      tool === 'text' ? 'bg-indigo-600/20 text-indigo-300 font-bold' : 'text-slate-300 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    <Type className="w-3.5 h-3.5" />
-                    <span>Text Annotation</span>
-                  </button>
-                  
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTool('image');
-                      setShowAnnotationDropdown(false);
-                    }}
-                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition ${
-                      tool === 'image' ? 'bg-indigo-600/20 text-indigo-300 font-bold' : 'text-slate-300 hover:text-white hover:bg-white/5'
-                    }`}
-                  >
-                    <Image className="w-3.5 h-3.5" />
-                    <span>Image Annotation</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            <button 
+              type="button"
+              onClick={() => setTool('text')}
+              className={`p-2 rounded-lg transition-all duration-200 ${
+                tool === 'text' 
+                  ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/20' 
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+              }`}
+              title="Text Annotation Tool"
+            >
+              <Type className="w-4 h-4" />
+            </button>
+
+            <button 
+              type="button"
+              onClick={() => setTool('image')}
+              className={`p-2 rounded-lg transition-all duration-200 ${
+                tool === 'image' 
+                  ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/20' 
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+              }`}
+              title="Image Annotation Tool"
+            >
+              <Image className="w-4 h-4" />
+            </button>
           </div>
 
           <div className="h-6 w-px bg-white/10" />
