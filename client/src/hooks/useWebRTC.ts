@@ -631,6 +631,22 @@ export function useWebRTC(
     }
   }, [roomName, screenStream]);
 
+  // Clean up all local media streams (camera/mic/screen) when the user leaves the room
+  useEffect(() => {
+    if (!roomName) {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        setLocalStream(null);
+      }
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        setScreenStream(null);
+      }
+      setAudioEnabled(false);
+      setVideoEnabled(false);
+    }
+  }, [roomName]);
+
   // BUG FIX #2: Expose the reactive socket state so consumers are notified when the connection is established.
   return {
     socket,

@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { 
   Trash2, RotateCcw, RotateCw, Download, PenTool, Eraser, 
   FolderOpen, UploadCloud, Palette, Sliders, CloudLightning,
-  Sparkles, Check, AlertCircle, RefreshCw, Type
+  Sparkles, Check, AlertCircle, RefreshCw, Type, Image
 } from 'lucide-react';
 import { Socket } from 'socket.io-client';
 
@@ -23,12 +23,19 @@ interface Stroke {
 
 export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [color, setColor] = useState('#6366f1');
+  const [color, setColor] = useState('#dcb16b'); // Start with the premium golden color
   const [brushSize, setBrushSize] = useState(4);
-  const [tool, setTool] = useState<'pen' | 'eraser' | 'text'>('pen');
+  const [tool, setTool] = useState<'pen' | 'eraser' | 'text' | 'image'>('pen');
   const [annotationText, setAnnotationText] = useState('Annotation');
   const [fontSize, setFontSize] = useState(16);
+  const [imageUrl, setImageUrl] = useState('');
+  const [imageWidth, setImageWidth] = useState(200);
+  const [imageHeight, setImageHeight] = useState(150);
+  const [showAnnotationDropdown, setShowAnnotationDropdown] = useState(false);
+  const [isImageValid, setIsImageValid] = useState<boolean | null>(null);
+  const [isImageLoading, setIsImageLoading] = useState(false);
   
   // History Stacks for Local Undo/Redo
   const [history, setHistory] = useState<string[]>([]);
@@ -61,6 +68,70 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     }
   };
 
+  // Helper to dynamically translate any theme/custom peach colors to premium golden color (#dcb16b)
+  const convertPeachToGold = (c: string): string => {
+    const normalized = c.toLowerCase().trim();
+    if (
+      normalized === '#e39a7a' || 
+      normalized === '#ffd4ac' || 
+      normalized === '#ffb6ac' || 
+      normalized === '#ffebe2' || 
+      normalized === '#f43f5e'
+    ) {
+      return '#dcb16b'; // Premium Muted Golden Sand
+    }
+    return c;
+  };
+
+  // Dynamic pixel manipulator to sweep loaded snapshots and swap peach pixels with golden pixels
+  const replacePeachPixelsWithGold = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
+    try {
+      const imgData = ctx.getImageData(0, 0, width, height);
+      const data = imgData.data;
+      
+      // Target peach colors in RGB
+      const peachColors = [
+        { r: 227, g: 154, b: 122 }, // #e39a7a
+        { r: 255, g: 212, b: 172 }, // #ffd4ac
+        { r: 255, g: 182, b: 172 }, // #ffb6ac
+        { r: 255, g: 235, b: 226 }, // #ffebe2
+        { r: 244, g: 63, b: 94 }    // #f43f5e
+      ];
+      
+      // Gold replacement color in RGB (#dcb16b)
+      const goldR = 220;
+      const goldG = 177;
+      const goldB = 107;
+      
+      for (let i = 0; i < data.length; i += 4) {
+        const r = data[i];
+        const g = data[i+1];
+        const b = data[i+2];
+        const a = data[i+3];
+        
+        if (a === 0) continue; // transparent pixel
+        
+        for (const peach of peachColors) {
+          const dist = Math.sqrt(
+            Math.pow(r - peach.r, 2) +
+            Math.pow(g - peach.g, 2) +
+            Math.pow(b - peach.b, 2)
+          );
+          
+          if (dist < 35) { // Match tolerance
+            data[i] = goldR;
+            data[i+1] = goldG;
+            data[i+2] = goldB;
+            break;
+          }
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    } catch (e) {
+      console.error("Failed to process image pixels for color replacement:", e);
+    }
+  };
+
   const showToast = (text: string, type: 'success' | 'error') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 3000);
@@ -89,6 +160,30 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     fetchCloudSnapshots();
   }, [roomName]);
 
+  // Real-time URL Validator and Image Preview Loader
+  useEffect(() => {
+    const cleanUrl = imageUrl.trim();
+    if (!cleanUrl) {
+      setIsImageValid(null);
+      setIsImageLoading(false);
+      return;
+    }
+
+    setIsImageLoading(true);
+    setIsImageValid(null);
+
+    const img = new window.Image();
+    img.src = cleanUrl;
+    img.onload = () => {
+      setIsImageValid(true);
+      setIsImageLoading(false);
+    };
+    img.onerror = () => {
+      setIsImageValid(false);
+      setIsImageLoading(false);
+    };
+  }, [imageUrl]);
+
   // Load a whiteboard snapshot from a URL
   const loadWhiteboardFromUrl = (url: string, broadcast = true) => {
     // SEC-08 FIX: Validate URL before loading into canvas to prevent SSRF
@@ -104,12 +199,16 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     if (!canvas || !ctx) return;
 
     saveState();
-    const img = new Image();
+    const img = new window.Image();
     img.crossOrigin = "anonymous";
     img.src = url;
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      
+      // Dynamic color replacement from peach to golden!
+      replacePeachPixelsWithGold(ctx, canvas.width, canvas.height);
+      
       showToast("Snapshot loaded into viewport", "success");
     };
     img.onerror = () => {
@@ -191,6 +290,20 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     setRedoStack([]); // Clear redo stack on new action
   };
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setImageUrl(event.target.result as string);
+          showToast("Local image uploaded. Click on whiteboard to place it.", "success");
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const handleStartDraw = (e: React.MouseEvent<HTMLCanvasElement>) => {
     saveState();
     const canvas = canvasRef.current;
@@ -211,7 +324,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
       const ctx = getCanvasContext();
       if (ctx) {
         ctx.font = `${fontSize}px sans-serif`;
-        ctx.fillStyle = color;
+        ctx.fillStyle = convertPeachToGold(color);
         ctx.fillText(textToDraw, x, y);
         
         // Sync text drawing with peers over custom text_event
@@ -222,12 +335,50 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
               x,
               y,
               text: textToDraw,
-              color,
+              color: convertPeachToGold(color),
               fontSize
             }
           });
         }
         showToast("Text annotation placed", "success");
+      }
+      return;
+    }
+
+    if (tool === 'image') {
+      const urlToDraw = imageUrl.trim();
+      if (!urlToDraw) {
+        showToast("Paste a URL or upload a local image first", "error");
+        return;
+      }
+      const ctx = getCanvasContext();
+      if (ctx) {
+        const img = new window.Image();
+        img.crossOrigin = "anonymous";
+        img.src = urlToDraw;
+        img.onload = () => {
+          const startX = x - imageWidth / 2;
+          const startY = y - imageHeight / 2;
+          ctx.drawImage(img, startX, startY, imageWidth, imageHeight);
+          
+          // Sync drawing with peers over socket
+          if (socket) {
+            socket.emit('image_event', {
+              roomName,
+              imageData: {
+                x: startX,
+                y: startY,
+                url: urlToDraw,
+                width: imageWidth,
+                height: imageHeight
+              }
+            });
+          }
+          showToast("Image annotation placed", "success");
+        };
+        img.onerror = () => {
+          showToast("Failed to load image. Ensure it is a valid direct link.", "error");
+        };
       }
       return;
     }
@@ -259,7 +410,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
       ctx.stroke();
       ctx.globalCompositeOperation = 'source-over'; // Reset
     } else {
-      ctx.strokeStyle = color;
+      ctx.strokeStyle = convertPeachToGold(color);
       ctx.stroke();
     }
 
@@ -270,7 +421,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
         y,
         lastX: lastPos.current.x,
         lastY: lastPos.current.y,
-        color: color,
+        color: convertPeachToGold(color),
         size: brushSize,
         isEraser: tool === 'eraser'
       };
@@ -296,7 +447,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     const previousState = history[history.length - 1];
     setHistory(prev => prev.slice(0, -1));
 
-    const img = new Image();
+    const img = new window.Image();
     img.src = previousState;
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -316,7 +467,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
     const nextState = redoStack[redoStack.length - 1];
     setRedoStack(prev => prev.slice(0, -1));
 
-    const img = new Image();
+    const img = new window.Image();
     img.src = nextState;
     img.onload = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -366,7 +517,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
         ctx.stroke();
         ctx.globalCompositeOperation = 'source-over';
       } else {
-        ctx.strokeStyle = stroke.color;
+        ctx.strokeStyle = convertPeachToGold(stroke.color);
         ctx.stroke();
       }
     });
@@ -387,8 +538,19 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
       const ctx = getCanvasContext();
       if (!ctx) return;
       ctx.font = `${textData.fontSize}px sans-serif`;
-      ctx.fillStyle = textData.color;
+      ctx.fillStyle = convertPeachToGold(textData.color);
       ctx.fillText(textData.text, textData.x, textData.y);
+    });
+
+    socket.on('remote_image', (imageData: { x: number; y: number; url: string; width: number; height: number }) => {
+      const ctx = getCanvasContext();
+      if (!ctx) return;
+      const img = new window.Image();
+      img.crossOrigin = "anonymous";
+      img.src = imageData.url;
+      img.onload = () => {
+        ctx.drawImage(img, imageData.x, imageData.y, imageData.width, imageData.height);
+      };
     });
 
     return () => {
@@ -396,6 +558,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
       socket.off('remote_clear');
       socket.off('remote_load');
       socket.off('remote_text');
+      socket.off('remote_image');
     };
   }, [socket]);
 
@@ -446,18 +609,53 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
               <Eraser className="w-4 h-4" />
             </button>
 
-            <button 
-              type="button"
-              onClick={() => setTool('text')}
-              className={`p-2 rounded-lg transition-all duration-200 ${
-                tool === 'text' 
-                  ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/20' 
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-              }`}
-              title="Text Annotation Tool"
-            >
-              <Type className="w-4 h-4" />
-            </button>
+            <div className="relative">
+              <button 
+                type="button"
+                onClick={() => setShowAnnotationDropdown(prev => !prev)}
+                className={`p-2 rounded-lg transition-all duration-200 flex items-center gap-1 ${
+                  (tool === 'text' || tool === 'image')
+                    ? 'bg-gradient-to-tr from-indigo-600 to-indigo-500 text-white shadow-md shadow-indigo-600/20' 
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                }`}
+                title="Annotation Tool Dropdown"
+              >
+                {tool === 'image' ? <Image className="w-4 h-4" /> : <Type className="w-4 h-4" />}
+                <span className="text-[8px] opacity-60">▼</span>
+              </button>
+              
+              {showAnnotationDropdown && (
+                <div className="absolute top-full left-0 mt-1 bg-slate-950/95 border border-white/10 rounded-xl p-1.5 shadow-2xl z-[150] flex flex-col gap-1 min-w-[140px] backdrop-blur-lg">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTool('text');
+                      setShowAnnotationDropdown(false);
+                    }}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition ${
+                      tool === 'text' ? 'bg-indigo-600/20 text-indigo-300 font-bold' : 'text-slate-300 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <Type className="w-3.5 h-3.5" />
+                    <span>Text Annotation</span>
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTool('image');
+                      setShowAnnotationDropdown(false);
+                    }}
+                    className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-xs transition ${
+                      tool === 'image' ? 'bg-indigo-600/20 text-indigo-300 font-bold' : 'text-slate-300 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <Image className="w-3.5 h-3.5" />
+                    <span>Image Annotation</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="h-6 w-px bg-white/10" />
@@ -465,7 +663,7 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
           {/* Color Palette selectors */}
           <div className="flex flex-wrap items-center gap-1.5 bg-slate-900/40 px-2 py-1.5 rounded-xl border border-white/5">
             <Palette className="w-3.5 h-3.5 text-slate-500 mr-1" />
-            {['#6366f1', '#f43f5e', '#10b981', '#ffffff', '#eab308'].map(c => (
+            {['#6366f1', '#dcb16b', '#10b981', '#ffffff', '#eab308'].map(c => (
               <button 
                 type="button"
                 key={c}
@@ -659,12 +857,82 @@ export default function Whiteboard({ socket, roomName }: WhiteboardProps) {
         </div>
       )}
 
+      {/* Image Tool Settings Drawer */}
+      {tool === 'image' && (
+        <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-white/5 flex flex-wrap items-center gap-3 animate-in fade-in slide-in-from-top-1 duration-200">
+          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Image Source:</span>
+          
+          {/* Online URL Paste Input */}
+          <input 
+            type="text" 
+            value={imageUrl} 
+            onChange={e => setImageUrl(e.target.value)} 
+            placeholder="Paste image URL from internet here..."
+            className="flex-1 min-w-[200px] bg-slate-900/80 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500/50" 
+          />
+
+          <span className="text-[10px] text-slate-500 font-bold">OR</span>
+
+          {/* Local Upload Button */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="nx-btn nx-btn-ghost text-2xs py-1.5 px-3 flex items-center gap-1.5 animate-pulse"
+          >
+            <UploadCloud className="w-3.5 h-3.5" /> Upload File
+          </button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            accept="image/*"
+            className="hidden"
+          />
+
+          {/* Live High-Fidelity Validation Image Preview */}
+          {imageUrl.trim() && (
+            <div className={`relative w-9 h-9 rounded-xl overflow-hidden border bg-slate-900/60 flex items-center justify-center flex-shrink-0 transition-all duration-200 ${
+              isImageValid === true ? 'border-emerald-500/40 shadow-lg shadow-emerald-500/10' :
+              isImageValid === false ? 'border-rose-500/40 shadow-lg shadow-rose-500/10' :
+              'border-white/10'
+            }`} title={isImageValid === true ? "Image Valid (Click canvas to place)" : isImageValid === false ? "Broken Image URL" : "Verifying Image..."}>
+              {isImageLoading ? (
+                <span className="h-3 w-3 rounded-full border border-indigo-500/30 border-t-indigo-400 animate-spin" />
+              ) : isImageValid === true ? (
+                <img src={imageUrl} alt="preview" className="w-full h-full object-cover" />
+              ) : (
+                <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+              )}
+            </div>
+          )}
+
+          {/* Size Controllers */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400">Width:</span>
+            <input 
+              type="number" 
+              value={imageWidth} 
+              onChange={e => setImageWidth(Math.max(20, Math.min(800, parseInt(e.target.value) || 100)))} 
+              className="w-14 bg-slate-900/80 border border-white/10 rounded-xl px-2 py-1.5 text-xs text-white text-center focus:outline-none" 
+            />
+            <span className="text-[10px] text-slate-400 ml-1">Height:</span>
+            <input 
+              type="number" 
+              value={imageHeight} 
+              onChange={e => setImageHeight(Math.max(20, Math.min(800, parseInt(e.target.value) || 100)))} 
+              className="w-14 bg-slate-900/80 border border-white/10 rounded-xl px-2 py-1.5 text-xs text-white text-center focus:outline-none" 
+            />
+            <span className="text-2xs text-slate-500">px</span>
+          </div>
+        </div>
+      )}
+
       {/* Main Drawing Canvas Board with Cyberpunk Shell Frame */}
       <div className="border border-white/5 rounded-3xl overflow-hidden bg-[#060a18] shadow-2xl relative group">
         
         {/* Glow corner decorations */}
         <div className="absolute -top-12 -right-12 w-24 h-24 bg-indigo-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-indigo-500/10 transition-all duration-300" />
-        <div className="absolute -bottom-12 -left-12 w-24 h-24 bg-rose-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-rose-500/10 transition-all duration-300" />
+        <div className="absolute -bottom-12 -left-12 w-24 h-24 bg-amber-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-amber-500/10 transition-all duration-300" />
 
         {/* Dynamic canvas node */}
         <canvas 

@@ -6,7 +6,7 @@ import {
   Zap, Edit2, Send, X, PhoneOff, WifiOff,
   BarChart2, Activity, Hash, LogOut,
   AlertTriangle, Headphones, Copy, PhoneCall,
-  LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Paperclip,
+  LayoutGrid, LayoutPanelLeft, LayoutPanelTop, PictureInPicture2, Columns2, Columns3, Paperclip,
   Plus, User, BookUser, ImagePlus, Save, Pin, PinOff, Maximize2, Scan, MousePointer, Keyboard,
   Bell, Download, Trash
 } from 'lucide-react';
@@ -333,15 +333,17 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [fitMode, setFitMode] = useState<'cover' | 'contain'>('cover');
   const [pinnedTile, setPinnedTile] = useState<string | null>(null);
-  const [hiddenTiles, setHiddenTiles] = useState<string[]>([]);
   const [requestControlTarget, setRequestControlTarget] = useState<{ id: string; name: string } | null>(null);
   // Stream layout mode — drives how the video tiles are arranged
   // 'auto'       → smart grid (default, adapts to participant count)
   // 'pip-remote' → remote party fills stage, self in small corner PiP
   // 'pip-local'  → local fills stage, remote in small corner PiP
   // 'equal'      → both tiles equal side-by-side
+  // 'three'      → three equal columns grid
   // 'horizontal' → horizontal strip (self left, remotes right in column)
-  const [streamLayout, setStreamLayout] = useState<'auto' | 'pip-remote' | 'pip-local' | 'equal' | 'horizontal'>('auto');
+  const [streamLayout, setStreamLayout] = useState<'auto' | 'pip-remote' | 'pip-local' | 'equal' | 'three' | 'horizontal'>('auto');
+  const [tileOrder, setTileOrder] = useState<string[]>([]);
+  const [dragOverTileId, setDragOverTileId] = useState<string | null>(null);
 
   /* Sidebar Resizing States & Logic */
   const [sidebarWidth, setSidebarWidth] = useState(320);
@@ -1776,7 +1778,6 @@ export default function App() {
 
   const togglePinnedTile = (tileId: string) => {
     setPinnedTile(prev => prev === tileId ? null : tileId);
-    setHiddenTiles(prev => prev.filter(id => id !== tileId));
   };
 
   const openFullscreen = async (id?: string) => {
@@ -1814,6 +1815,45 @@ export default function App() {
     } else {
       setLocallyHiddenPeers(prev => prev.filter(id => id !== peerId));
       showToast(`Locally unhid ${peerId === 'self' ? 'your stream' : 'peer stream'}.`, 'info');
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, id: string) => {
+    e.dataTransfer.setData('text/plain', id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, _id: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDragEnter = (e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    setDragOverTileId(id);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverTileId(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    setDragOverTileId(null);
+    const draggedId = e.dataTransfer.getData('text/plain');
+    if (draggedId && draggedId !== targetId) {
+      setTileOrder(prev => {
+        const newOrder = [...prev];
+        const draggedIndex = newOrder.indexOf(draggedId);
+        const targetIndex = newOrder.indexOf(targetId);
+        if (draggedIndex !== -1 && targetIndex !== -1) {
+          // Swap positions in custom grid layout
+          newOrder[draggedIndex] = targetId;
+          newOrder[targetIndex] = draggedId;
+        }
+        return newOrder;
+      });
+      showToast('Rearranged tile positions', 'success');
     }
   };
 
@@ -2485,11 +2525,27 @@ export default function App() {
   }, [selectedAudioOutput, applyAudioOutput]);
 
   useEffect(() => {
-    if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream;
+    const videoEl = localVideoRef.current;
+    if (videoEl) {
+      videoEl.srcObject = localStream;
+    }
+    return () => {
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
+    };
   }, [localStream, inRoom]);
 
   useEffect(() => {
-    if (screenVideoRef.current && screenStream) screenVideoRef.current.srcObject = screenStream;
+    const videoEl = screenVideoRef.current;
+    if (videoEl) {
+      videoEl.srcObject = screenStream;
+    }
+    return () => {
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
+    };
   }, [screenStream]);
 
   /* ── Picture-in-Picture (PiP) Handlers ── */
@@ -2669,7 +2725,7 @@ export default function App() {
 
   /* ── Derived ─────────────────────────── */
   const volPercent    = Math.min(100, (volumeLevel / 255) * 100);
-  const visibleParticipants = participants.filter(peer => !locallyHiddenPeers.includes(peer.id));
+  const visibleParticipants = participants; // Don't completely filter them out so their placeholder tiles remain in DOM for unhiding
   const isSelfHidden = locallyHiddenPeers.includes('self');
   const orderedParticipants = pinnedTile && pinnedTile !== 'self'
     ? [...visibleParticipants].sort((a, b) => (a.id === pinnedTile ? -1 : b.id === pinnedTile ? 1 : 0))
@@ -2689,8 +2745,24 @@ export default function App() {
   const hasPinnedTile = Boolean(pinnedTile && !locallyHiddenPeers.includes(pinnedTile));
   const videoFitClass = fitMode === 'cover' ? 'object-cover' : 'object-contain bg-slate-950';
 
-  const totalVisibleTiles = (!isSelfHidden ? 1 : 0) + orderedParticipants.length + (screenStream ? 1 : 0);
+  const totalVisibleTiles = 1 + orderedParticipants.length + (screenStream ? 1 : 0);
   const shouldHideSidebar = inRoom && isPipActive && !pipIncludeSidebar;
+
+  // Synchronize tileOrder with currently active visible streams
+  useEffect(() => {
+    const activeIds: string[] = [];
+    activeIds.push('self'); // Keep self in order
+    orderedParticipants.forEach(p => {
+      activeIds.push(p.id);
+    });
+    if (screenStream) activeIds.push('screen');
+
+    setTileOrder(prev => {
+      const filteredPrev = prev.filter(id => activeIds.includes(id));
+      const newIds = activeIds.filter(id => !filteredPrev.includes(id));
+      return [...filteredPrev, ...newIds];
+    });
+  }, [orderedParticipants, screenStream]);
 
   /* ── Unified settings render helper ──── */
   const renderSettingsArea = () => {
@@ -4916,6 +4988,7 @@ export default function App() {
                     { id: 'pip-remote', Icon: PictureInPicture2,  tip: 'Remote Focus (PiP)' },
                     { id: 'pip-local',  Icon: LayoutPanelLeft,    tip: 'Self Focus (PiP)' },
                     { id: 'equal',      Icon: Columns2,            tip: 'Side by Side' },
+                    { id: 'three',      Icon: Columns3,            tip: 'Three Columns Grid' },
                     { id: 'horizontal', Icon: LayoutPanelTop,     tip: 'Horizontal Strip' },
                   ] as { id: typeof streamLayout; Icon: React.FC<{ className?: string }>; tip: string }[]).map(({ id, Icon, tip }) => (
                     <button
@@ -4943,14 +5016,14 @@ export default function App() {
                     className="nx-btn nx-btn-ghost text-2xs py-2 px-3">
                     <Maximize2 className="w-3.5 h-3.5" /> Full Screen
                   </button>
-                  <button onClick={() => setHiddenTiles([])}
+                  <button onClick={() => setLocallyHiddenPeers([])}
                     className="nx-btn nx-btn-ghost text-2xs py-2 px-3"
-                    disabled={hiddenTiles.length === 0}>
+                    disabled={locallyHiddenPeers.length === 0}>
                     <Eye className="w-3.5 h-3.5" /> Show All
                   </button>
                 </div>
                 <span className="text-3xs font-mono text-slate-500">
-                  {orderedParticipants.length + (isSelfHidden ? 0 : 1)} visible · {hiddenTiles.length} hidden
+                  {orderedParticipants.length + 1} visible · {locallyHiddenPeers.length} hidden
                 </span>
               </div>
 
@@ -4965,7 +5038,7 @@ export default function App() {
               <div
                 className={`flex-1 gap-4 overflow-y-auto ${
                   streamLayout === 'horizontal' ? 'flex flex-row'
-                  : streamLayout === 'equal'    ? 'grid'
+                  : (streamLayout === 'equal' || streamLayout === 'three') ? 'grid'
                   : streamLayout === 'pip-remote' || streamLayout === 'pip-local' ? 'relative'
                   : 'grid'
                 } ${hasPinnedTile ? 'video-grid-pinned' : ''}`}
@@ -4979,141 +5052,182 @@ export default function App() {
                       }
                     : streamLayout === 'equal'
                     ? { gridTemplateColumns: 'repeat(2, 1fr)', gridTemplateRows: '1fr' }
+                    : streamLayout === 'three'
+                    ? { gridTemplateColumns: 'repeat(3, 1fr)' }
                     : streamLayout === 'horizontal'
                     ? {}   // flex-row handled by class
                     : {}   // pip modes: children positioned absolutely
                   ),
                 }}>
 
-                {/* Self tile */}
-                {!isSelfHidden && (
-                <div
-                  id="tile-self"
-                  className={`video-tile ${
-                    controlledBy ? 'controlled' : ''
-                  } ${pinnedTile === 'self' ? 'pinned' : ''} ${
-                    streamLayout === 'pip-remote' ? 'layout-pip-self' : ''
-                  } ${
-                    streamLayout === 'pip-local' ? 'layout-pip-local-self' : ''
-                  } ${
-                    streamLayout === 'horizontal' ? 'layout-horizontal-self' : ''
-                  }`}
-                  style={{
-                    height: (streamLayout === 'auto' || streamLayout === 'equal') ? '100%' : undefined,
-                    minHeight: streamLayout === 'pip-remote' ? 0 : 220,
-                    ...(streamLayout === 'pip-local' ? { flex: 1, minHeight: 220 } : {}),
-                  }}>
-                  {isSelfHidden && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 backdrop-blur-sm z-20">
-                      <EyeOff className="w-6 h-6 text-slate-500" />
-                      <p className="text-[10px] text-slate-500 font-semibold uppercase">Your Stream Hidden Locally</p>
-                      <button onClick={() => toggleLocalHide('self')} className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold mt-1">Unhide Stream</button>
-                    </div>
-                  )}
-                  <video ref={localVideoRef} autoPlay playsInline muted
-                    className={`w-full h-full ${videoFitClass} ${videoEnabled ? '' : 'opacity-0'}`} style={{ transform: 'scaleX(-1)', minHeight: 220 }} />
+                {/* Active Tiles ordered according to custom tileOrder (draggable/re-orderable) */}
+                {tileOrder.map((tileId) => {
+                  if (tileId === 'self') {
+                    return (
+                      <div
+                        key="self"
+                        id="tile-self"
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, 'self')}
+                        onDragOver={(e) => handleDragOver(e, 'self')}
+                        onDragEnter={(e) => handleDragEnter(e, 'self')}
+                        onDragLeave={handleDragLeave}
+                        onDrop={(e) => handleDrop(e, 'self')}
+                        className={`video-tile cursor-grab active:cursor-grabbing ${
+                          dragOverTileId === 'self' ? 'drag-over' : ''
+                        } ${
+                          controlledBy ? 'controlled' : ''
+                        } ${pinnedTile === 'self' ? 'pinned' : ''} ${
+                          streamLayout === 'pip-remote' ? 'layout-pip-self' : ''
+                        } ${
+                          streamLayout === 'pip-local' ? 'layout-pip-local-self' : ''
+                        } ${
+                          streamLayout === 'horizontal' ? 'layout-horizontal-self' : ''
+                        }`}
+                        style={{
+                          height: (streamLayout === 'auto' || streamLayout === 'equal' || streamLayout === 'three') ? '100%' : undefined,
+                          minHeight: streamLayout === 'pip-remote' ? 0 : 220,
+                          ...(streamLayout === 'pip-local' ? { flex: 1, minHeight: 220 } : {}),
+                        }}>
+                        {isSelfHidden && (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 backdrop-blur-sm z-20">
+                            <EyeOff className="w-6 h-6 text-slate-500" />
+                            <p className="text-[10px] text-slate-500 font-semibold uppercase">Your Stream Hidden Locally</p>
+                            <button onClick={() => toggleLocalHide('self')} className="text-[9px] text-indigo-400 hover:text-indigo-300 font-bold mt-1">Unhide Stream</button>
+                          </div>
+                        )}
+                        <video ref={localVideoRef} autoPlay playsInline muted draggable={false}
+                          className={`w-full h-full ${videoFitClass} ${videoEnabled ? '' : 'opacity-0'}`} style={{ transform: 'scaleX(-1)', minHeight: 220 }} />
 
-                  {!videoEnabled && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
-                      style={{ background: 'radial-gradient(circle at 50% 20%, rgba(99,102,241,0.18), rgba(6,10,24,0.96) 58%)' }}>
-                      {isValidProfilePic(profile.profilePic) ? (
-                        <img src={profile.profilePic} alt={userName}
-                          className="w-24 h-24 rounded-full object-cover border-2 border-indigo-500/40 shadow-xl" />
-                      ) : (
-                        <div className="w-24 h-24 rounded-full flex items-center justify-center text-3xl border-2 border-indigo-500/30"
-                          style={{ background: 'rgba(99,102,241,0.14)' }}>
-                          {myAlias.avatar}
+                        {!videoEnabled && (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center"
+                            style={{ background: 'radial-gradient(circle at 50% 20%, rgba(99,102,241,0.18), rgba(6,10,24,0.96) 58%)' }}>
+                            {isValidProfilePic(profile.profilePic) ? (
+                              <img src={profile.profilePic} alt={userName} draggable={false}
+                                className="w-24 h-24 rounded-full object-cover border-2 border-indigo-500/40 shadow-xl" />
+                            ) : (
+                              <div className="w-24 h-24 rounded-full flex items-center justify-center text-3xl border-2 border-indigo-500/30" draggable={false}
+                                style={{ background: 'rgba(99,102,241,0.14)' }}>
+                                {myAlias.avatar}
+                              </div>
+                            )}
+                            <div>
+                              <p className="text-lg font-bold text-white">{profile.username || myAlias.name}</p>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="video-nameplate">
+                          <div className="flex items-center gap-2">
+                            <span className="status-dot live" style={{ width: 6, height: 6 }} />
+                            <span className="text-xs font-semibold text-white">{myAlias.name} (You)</span>
+                          </div>
+                          <div className="flex items-end gap-0.5 h-3.5">
+                            <span className="audio-bar" />
+                            <span className="audio-bar" />
+                            <span className="audio-bar" />
+                            <span className="audio-bar" />
+                          </div>
                         </div>
-                      )}
-                      <div>
-                        <p className="text-lg font-bold text-white">{profile.username || myAlias.name}</p>
+
+                        <div className="tile-actions">
+                          <button onClick={() => togglePinnedTile('self')} className="tile-action" title={pinnedTile === 'self' ? 'Unpin' : 'Pin'}>
+                            {pinnedTile === 'self' ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+                          </button>
+                          <button onClick={() => openFullscreen('tile-self')} className="tile-action" title="Fullscreen">
+                            <Maximize2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button 
+                            onClick={() => toggleLocalHide('self')} 
+                            className={`tile-action ${isSelfHidden ? 'active text-emerald-400' : ''}`} 
+                            title={isSelfHidden ? "Unhide Locally" : "Hide Locally"}
+                          >
+                            {isSelfHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+
+                        {/* Floating PiP Hover Overlay */}
+                        {streamLayout === 'pip-remote' && (
+                          <div className="pip-hover-overlay">
+                            <button onClick={(e) => { e.stopPropagation(); toggleLocalHide('self'); }} className="pip-close-btn" title="Hide self video">
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                            <button onClick={(e) => { e.stopPropagation(); openFullscreen('tile-self'); }} className="pip-fullscreen-btn" title="Expand to Fullscreen">
+                              <Maximize2 className="w-4 h-4" />
+                              <span className="text-[9px] uppercase tracking-wider font-semibold">Expand</span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Muted / vid-off indicators */}
+                        {!audioEnabled && (
+                          <div className="absolute top-3 right-3">
+                            <span className="nx-badge nx-badge-rose"><MicOff className="w-2.5 h-2.5" /></span>
+                          </div>
+                        )}
+                        {!videoEnabled && (
+                          <div className="absolute top-3 left-3">
+                            <span className="nx-badge nx-badge-indigo"><VideoOff className="w-2.5 h-2.5" /> Profile</span>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    );
+                  }
 
-                  <div className="video-nameplate">
-                    <div className="flex items-center gap-2">
-                      <span className="status-dot live" style={{ width: 6, height: 6 }} />
-                      <span className="text-xs font-semibold text-white">{myAlias.name} (You)</span>
-                    </div>
-                    <div className="flex items-end gap-0.5 h-3.5">
-                      <span className="audio-bar" />
-                      <span className="audio-bar" />
-                      <span className="audio-bar" />
-                      <span className="audio-bar" />
-                    </div>
-                  </div>
+                  if (tileId === 'screen') {
+                    return (
+                      <div
+                        key="screen"
+                        id="tile-screen"
+                        draggable
+                        onDragStart={(e) => handleDragStart(e, 'screen')}
+                        onDragOver={(e) => handleDragOver(e, 'screen')}
+                        onDragEnter={(e) => handleDragEnter(e, 'screen')}
+                        onDragLeave={handleDragLeave}
+                        onDrop={(e) => handleDrop(e, 'screen')}
+                        className={`video-tile cursor-grab active:cursor-grabbing ${
+                          dragOverTileId === 'screen' ? 'drag-over' : ''
+                        } ${pinnedTile === 'screen' ? 'pinned' : ''}`}
+                        style={{
+                          height: (streamLayout === 'auto' || streamLayout === 'equal' || streamLayout === 'three') ? '100%' : undefined,
+                          minHeight: 220
+                        }}
+                      >
+                        <video ref={screenVideoRef} autoPlay playsInline draggable={false}
+                          className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`} />
+                        <div className="absolute top-3 left-3">
+                          <span className="nx-badge nx-badge-rose">
+                            <Monitor className="w-2.5 h-2.5" /> Sharing Screen
+                          </span>
+                        </div>
+                        <div className="tile-actions">
+                          <button onClick={() => togglePinnedTile('screen')} className="tile-action" title={pinnedTile === 'screen' ? 'Unpin' : 'Pin'}>
+                            {pinnedTile === 'screen' ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+                          </button>
+                          <button onClick={() => openFullscreen('tile-screen')} className="tile-action" title="Fullscreen">
+                            <Maximize2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
 
-                  <div className="tile-actions">
-                    <button onClick={() => togglePinnedTile('self')} className="tile-action" title={pinnedTile === 'self' ? 'Unpin' : 'Pin'}>
-                      {pinnedTile === 'self' ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
-                    </button>
-                    <button onClick={() => openFullscreen('tile-self')} className="tile-action" title="Fullscreen">
-                      <Maximize2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => toggleLocalHide('self')} className="tile-action" title="Hide Locally">
-                      <EyeOff className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  {/* Floating PiP Hover Overlay */}
-                  {streamLayout === 'pip-remote' && (
-                    <div className="pip-hover-overlay">
-                      <button onClick={(e) => { e.stopPropagation(); toggleLocalHide('self'); }} className="pip-close-btn" title="Hide self video">
-                        <X className="w-3 h-3" />
-                      </button>
-                      <button onClick={(e) => { e.stopPropagation(); openFullscreen('tile-self'); }} className="pip-fullscreen-btn" title="Expand to Fullscreen">
-                        <Maximize2 className="w-4 h-4" />
-                        <span className="text-[9px] uppercase tracking-wider font-semibold">Expand</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Muted / vid-off indicators */}
-                  {!audioEnabled && (
-                    <div className="absolute top-3 right-3">
-                      <span className="nx-badge nx-badge-rose"><MicOff className="w-2.5 h-2.5" /></span>
-                    </div>
-                  )}
-                  {!videoEnabled && (
-                    <div className="absolute top-3 left-3">
-                      <span className="nx-badge nx-badge-indigo"><VideoOff className="w-2.5 h-2.5" /> Profile</span>
-                    </div>
-                  )}
-                </div>
-                )}
-
-                {/* Participants */}
-                {orderedParticipants.length === 0 ? (
-                  <div
-                    className="video-tile flex flex-col items-center justify-center gap-4 p-8"
-                    style={{
-                      minHeight: 220,
-                      ...(streamLayout === 'pip-remote' || streamLayout === 'pip-local'
-                        ? { position: 'absolute', inset: 0, borderRadius: 'inherit' }
-                        : streamLayout === 'horizontal'
-                        ? { flex: 1 }
-                        : {}),
-                    }}>
-                    <Radio className="w-8 h-8 text-[var(--nx-primary)]/40 animate-pulse" />
-                    <div className="text-center">
-                      <p className="text-xs text-slate-500">Waiting for peers…</p>
-                      <p className="text-2xs text-slate-600 mt-1">Share room code to invite</p>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer hover:bg-[var(--nx-teal-soft)] transition"
-                      style={{ border: '1px solid var(--nx-line-strong)', background: 'var(--nx-panel)' }}
-                      onClick={() => copyInviteLink()}>
-                      <Hash className="w-3 h-3 text-[var(--nx-primary)]" />
-                      <span className="font-mono text-2xs text-[var(--nx-primary-dark)]">{roomName}</span>
-                      <Copy className="w-3 h-3 text-[var(--nx-primary)]" />
-                    </div>
-                  </div>
-                ) : (
-                  orderedParticipants.map((peer, peerIdx) => (
+                  // It's a remote peer
+                  const peer = orderedParticipants.find(p => p.id === tileId);
+                  if (!peer) return null;
+                  return (
                     <div
-                      id={`tile-${peer.id}`}
                       key={peer.id}
-                      className={`video-tile flex flex-col items-center justify-center gap-4 p-6 ${
+                      id={`tile-${peer.id}`}
+                      draggable
+                      onDragStart={(e) => handleDragStart(e, peer.id)}
+                      onDragOver={(e) => handleDragOver(e, peer.id)}
+                      onDragEnter={(e) => handleDragEnter(e, peer.id)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, peer.id)}
+                      className={`video-tile cursor-grab active:cursor-grabbing flex flex-col items-center justify-center gap-4 p-6 ${
+                        dragOverTileId === peer.id ? 'drag-over' : ''
+                      } ${
                         pinnedTile === peer.id ? 'pinned' : ''
                       } ${
                         streamLayout === 'pip-remote' ? 'layout-pip-remote-peer' : ''
@@ -5124,19 +5238,19 @@ export default function App() {
                       }`}
                       style={(() => {
                         if (streamLayout === 'pip-remote') {
-                          return peerIdx === 0
+                          return peer.id === tileOrder[0]
                             ? { position: 'absolute' as const, inset: 0, zIndex: 1, borderRadius: 'inherit', minHeight: 0 }
                             : { position: 'absolute' as const, bottom: 16, left: 16, width: 140, height: 100, zIndex: 3, borderRadius: 12, minHeight: 0 };
                         }
                         if (streamLayout === 'pip-local') {
-                          return peerIdx === 0
+                          return peer.id === tileOrder[0]
                             ? { position: 'absolute' as const, bottom: 16, right: 16, width: 140, height: 100, zIndex: 3, borderRadius: 12, minHeight: 0 }
                             : { position: 'absolute' as const, bottom: 16, left: 16, width: 140, height: 100, zIndex: 3, borderRadius: 12, minHeight: 0 };
                         }
                         if (streamLayout === 'horizontal') {
-                          return { flex: peerIdx === 0 ? 1 : undefined, minHeight: peerIdx === 0 ? 220 : 120 };
+                          return { flex: peer.id === tileOrder[0] ? 1 : undefined, minHeight: peer.id === tileOrder[0] ? 220 : 120 };
                         }
-                        return { minHeight: 220, height: (streamLayout === 'auto' || streamLayout === 'equal') ? '100%' : undefined };
+                        return { minHeight: 220, height: (streamLayout === 'auto' || streamLayout === 'equal' || streamLayout === 'three') ? '100%' : undefined };
                       })()}>
                       {locallyHiddenPeers.includes(peer.id) ? (
                         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-950/90 backdrop-blur-sm z-20">
@@ -5147,10 +5261,10 @@ export default function App() {
                       ) : null}
                       
                       {isValidProfilePic(getPeerProfilePic(peer)) ? (
-                        <img src={getPeerProfilePic(peer)} alt={peer.name}
+                        <img src={getPeerProfilePic(peer)} alt={peer.name} draggable={false}
                           className="w-20 h-20 rounded-full object-cover border-2 border-[var(--nx-primary)]/20 shadow-xl" />
                       ) : (
-                        <div className="participant-avatar">{peer.avatar}</div>
+                        <div className="participant-avatar" draggable={false}>{peer.avatar}</div>
                       )}
                       
                       {locallyMutedPeers.includes(peer.id) && (
@@ -5177,8 +5291,12 @@ export default function App() {
                         <button onClick={() => openFullscreen(`tile-${peer.id}`)} className="tile-action" title="Fullscreen">
                           <Maximize2 className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => toggleLocalHide(peer.id)} className="tile-action" title="Hide Locally">
-                          <EyeOff className="w-3.5 h-3.5" />
+                        <button 
+                          onClick={() => toggleLocalHide(peer.id)} 
+                          className={`tile-action ${locallyHiddenPeers.includes(peer.id) ? 'active text-emerald-400' : ''}`} 
+                          title={locallyHiddenPeers.includes(peer.id) ? "Unhide Locally" : "Hide Locally"}
+                        >
+                          {locallyHiddenPeers.includes(peer.id) ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                         </button>
                         <button onClick={() => {
                           setLocallyMutedPeers(prev => prev.includes(peer.id) ? prev.filter(id => id !== peer.id) : [...prev, peer.id]);
@@ -5200,33 +5318,52 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  ))
-                )}
+                  );
+                })}
 
-                {/* Screen share inside the grid! */}
-                {screenStream && (
-                  <div
-                    id="tile-screen"
-                    className={`video-tile ${pinnedTile === 'screen' ? 'pinned' : ''}`}
-                    style={{
-                      height: (streamLayout === 'auto' || streamLayout === 'equal') ? '100%' : undefined,
-                      minHeight: 220
-                    }}
-                  >
-                    <video ref={screenVideoRef} autoPlay playsInline
-                      className={`w-full h-full ${fitMode === 'cover' ? 'object-cover' : 'object-contain'}`} />
-                    <div className="absolute top-3 left-3">
-                      <span className="nx-badge nx-badge-rose">
-                        <Monitor className="w-2.5 h-2.5" /> Sharing Screen
-                      </span>
+                {/* Render empty placeholders to ensure a full 3-column layout when 'three' is chosen */}
+                {streamLayout === 'three' && tileOrder.length < 3 && 
+                  Array.from({ length: 3 - tileOrder.length }).map((_, idx) => (
+                    <div
+                      key={`empty-placeholder-${idx}`}
+                      className="video-tile flex flex-col items-center justify-center gap-4 p-8 border-2 border-dashed border-slate-800 bg-slate-950/20"
+                      style={{
+                        minHeight: 220,
+                        height: '100%',
+                      }}
+                    >
+                      <Radio className="w-8 h-8 text-[var(--nx-primary)]/20 animate-pulse" />
+                      <div className="text-center" draggable={false}>
+                        <p className="text-xs text-slate-500 font-medium">Empty Grid Slot</p>
+                        <p className="text-3xs text-slate-600 mt-1">Waiting for more participants</p>
+                      </div>
                     </div>
-                    <div className="tile-actions">
-                      <button onClick={() => togglePinnedTile('screen')} className="tile-action" title={pinnedTile === 'screen' ? 'Unpin' : 'Pin'}>
-                        {pinnedTile === 'screen' ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
-                      </button>
-                      <button onClick={() => openFullscreen('tile-screen')} className="tile-action" title="Fullscreen">
-                        <Maximize2 className="w-3.5 h-3.5" />
-                      </button>
+                  ))
+                }
+
+                {/* Waiting placeholder rendered if no participants are present */}
+                {orderedParticipants.length === 0 && streamLayout !== 'three' && (
+                  <div
+                    className="video-tile flex flex-col items-center justify-center gap-4 p-8"
+                    style={{
+                      minHeight: 220,
+                      ...(streamLayout === 'pip-remote' || streamLayout === 'pip-local'
+                        ? { position: 'absolute', inset: 0, borderRadius: 'inherit' }
+                        : streamLayout === 'horizontal'
+                        ? { flex: 1 }
+                        : {}),
+                    }}>
+                    <Radio className="w-8 h-8 text-[var(--nx-primary)]/40 animate-pulse" />
+                    <div className="text-center">
+                      <p className="text-xs text-slate-500">Waiting for peers…</p>
+                      <p className="text-2xs text-slate-600 mt-1">Share room code to invite</p>
+                    </div>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer hover:bg-[var(--nx-teal-soft)] transition"
+                      style={{ border: '1px solid var(--nx-line-strong)', background: 'var(--nx-panel)' }}
+                      onClick={() => copyInviteLink()}>
+                      <Hash className="w-3 h-3 text-[var(--nx-primary)]" />
+                      <span className="font-mono text-2xs text-[var(--nx-primary-dark)]">{roomName}</span>
+                      <Copy className="w-3 h-3 text-[var(--nx-primary)]" />
                     </div>
                   </div>
                 )}

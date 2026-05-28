@@ -642,6 +642,10 @@ io.on('connection', (socket) => {
     socket.to(roomName).emit('remote_text', textData);
   });
 
+  socket.on('image_event', ({ roomName, imageData }) => {
+    socket.to(roomName).emit('remote_image', imageData);
+  });
+
   socket.on('toggle_screenshare', ({ isSharing }) => {
     if (currentRoom) {
       const list = roomParticipants[currentRoom] || [];

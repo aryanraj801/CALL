@@ -470,6 +470,12 @@ h1, h2, h3, h4, h5, h6 {
   border-color: rgba(239, 68, 68, 0.6);
   box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.3), inset 0 0 40px rgba(239, 68, 68, 0.1);
 }
+.video-tile.drag-over {
+  border-color: var(--nx-primary) !important;
+  box-shadow: 0 0 0 3px rgba(209, 110, 71, 0.4), 0 20px 40px rgba(0,0,0,0.5) !important;
+  transform: scale(1.025) translateY(-2px);
+  z-index: 50 !important;
+}
 
 /* ============================================================
    STREAM LAYOUT MODES
